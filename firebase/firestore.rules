@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // search_cache: only backend Admin SDK can access
+    match /search_cache/{cacheId} {
+      allow read, write: if false;
+    }
+
+    // popular_searches: public read, backend write only
+    match /popular_searches/{searchId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Block all other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

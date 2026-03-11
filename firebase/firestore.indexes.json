@@ -1,0 +1,20 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "search_cache",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "query_hash", "order": "ASCENDING" },
+        { "fieldPath": "expires_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "popular_searches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "count", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

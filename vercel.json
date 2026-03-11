@@ -1,8 +1,23 @@
 {
   "rewrites": [
+    { "source": "/assets/(.*)", "destination": "/assets/$1" },
+    { "source": "/(favicon\\.svg|og-image\\.svg|vite\\.svg|robots\\.txt|manifest\\.json)", "destination": "/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    },
+    {
+      "source": "/(favicon\\.svg|og-image\\.svg)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=86400" },
+        { "key": "Content-Type", "value": "image/svg+xml" }
+      ]
+    },
     {
       "source": "/(.*)",
       "headers": [

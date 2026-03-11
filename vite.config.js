@@ -12,4 +12,15 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'firebase-vendor': ['firebase/app', 'firebase/firestore'],
+          'ui-vendor': ['lucide-react', 'react-hot-toast', 'clsx'],
+        },
+      },
+    },
+  },
 })

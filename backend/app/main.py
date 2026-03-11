@@ -1,5 +1,6 @@
 import logging
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,12 +17,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting FoodAggregator API...")
+    init_firebase(
+        service_account_path=settings.firebase_service_account_path,
+        service_account_json=settings.firebase_service_account_json,
+        project_id=settings.firebase_project_id,
+    )
+    logger.info(f"Environment: {settings.environment}")
+    logger.info(f"Allowed origins: {settings.origins}")
+    yield
+    logger.info("Shutting down FoodAggregator API.")
+
+
 app = FastAPI(
     title="FoodAggregator API",
     description="Compare food delivery prices across Uber Eats, DoorDash, and Grubhub.",
     version="1.0.0",
     docs_url="/docs" if settings.environment != "production" else None,
     redoc_url=None,
+    lifespan=lifespan,
 )
 
 # CORS
@@ -37,18 +54,6 @@ app.add_middleware(
 app.include_router(search.router, prefix="/api", tags=["search"])
 app.include_router(restaurant.router, prefix="/api", tags=["restaurant"])
 app.include_router(deals.router, prefix="/api", tags=["deals"])
-
-
-@app.on_event("startup")
-async def startup():
-    logger.info("Starting FoodAggregator API...")
-    init_firebase(
-        service_account_path=settings.firebase_service_account_path,
-        service_account_json=settings.firebase_service_account_json,
-        project_id=settings.firebase_project_id,
-    )
-    logger.info(f"Environment: {settings.environment}")
-    logger.info(f"Allowed origins: {settings.origins}")
 
 
 @app.get("/health", response_model=HealthResponse, tags=["health"])

@@ -11,10 +11,11 @@ class ApiError extends Error {
 async function fetchWithRetry(url, options = {}) {
   const { retries = 2, retryDelay = 800, timeout = 15000, ...fetchOpts } = options
 
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeout)
-
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // Create a fresh AbortController for each attempt so prior aborts don't bleed over
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeout)
+
     try {
       const res = await fetch(url, { ...fetchOpts, signal: controller.signal })
       clearTimeout(timeoutId)
@@ -25,6 +26,7 @@ async function fetchWithRetry(url, options = {}) {
       }
       return await res.json()
     } catch (err) {
+      clearTimeout(timeoutId)
       if (err.name === 'AbortError') throw new ApiError('Request timed out', 504)
       if (err instanceof ApiError) throw err
       if (attempt < retries) {

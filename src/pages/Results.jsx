@@ -16,14 +16,13 @@ export default function Results() {
   const { results, loading, error } = useSearchContext()
   const { search, setQuery, setLocation } = useSearch()
 
-  // On mount, if URL has params and no results yet, trigger a search
+  // Sync URL params into context and trigger search when URL changes
   useEffect(() => {
-    if (urlQuery && urlLocation && results.length === 0 && !loading) {
-      setQuery(urlQuery)
-      setLocation(urlLocation)
-      search(urlQuery, urlLocation)
-    }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!urlQuery || !urlLocation) return
+    setQuery(urlQuery)
+    setLocation(urlLocation)
+    search(urlQuery, urlLocation)
+  }, [urlQuery, urlLocation]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">

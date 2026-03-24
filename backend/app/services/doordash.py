@@ -1,19 +1,17 @@
 """
-DoorDash scraper - Updated March 2026.
+DoorDash scraper - Fixed March 2026.
 
-Strategy: DoorDash's /search/store/{query}/ page is Next.js App Router with
-React Server Components (RSC). The server renders the store listing server-side
-and streams JSON store data inside <script>self.__next_f.push([1,"..."])</script>
-tags. Each tag's string argument (when JSON-parsed) contains RSC payload chunks
-that include store records with:
-  - store_name, store_id, star_rating, store_display_asap_time,
-    store_distance_in_miles, store_latitude, store_longitude
+Strategy:
+1. SEARCH: DoorDash's /search/store/{query}/ page uses Next.js RSC streaming.
+   Store data is embedded in <script>self.__next_f.push([1,"..."])</script> tags.
+   We extract store metadata AND fee data (delivery_fee, service_fee) from these
+   RSC chunks. Location is passed via the `dd_delivery_address` cookie.
 
-Location is passed via the `dd_delivery_address` cookie — a base64-encoded
-JSON object containing latitude, longitude and address details. When this cookie
-is set, DoorDash's SSR uses it to localise the store feed.
+2. RESTAURANT DETAIL: The /store/{id}/ page also uses RSC streaming. Menu items
+   with prices are embedded in the same self.__next_f.push pattern. We extract
+   full menu sections with item names, descriptions, prices, and images.
 
-No GQL, no auth required — just an HTTP GET + HTML parse.
+No GraphQL, no auth required -- just HTTP GET + HTML/RSC parse.
 """
 
 import base64
@@ -26,7 +24,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.models.food import Platform, PlatformResult
+from app.models.food import MenuItem, Platform, PlatformResult
 from app.services.scraper_base import BaseScraper, geocode
 
 logger = logging.getLogger(__name__)
@@ -44,7 +42,7 @@ _BROWSER_HEADERS = {
         "q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate",  # omit br — not supported by httpx default
+    "Accept-Encoding": "gzip, deflate",
     "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
     "sec-ch-ua-mobile": "?0",
     "sec-ch-ua-platform": '"macOS"',
@@ -56,11 +54,7 @@ _BROWSER_HEADERS = {
 
 
 def _build_location_cookie(lat: float, lng: float, address: str = "") -> str:
-    """Build the dd_delivery_address cookie value that tells DoorDash where to search.
-
-    DoorDash's SSR reads this cookie to localise the store feed. The value is a
-    base64-encoded JSON blob (no padding, URL-safe).
-    """
+    """Build the dd_delivery_address cookie value."""
     payload = {
         "lat": lat,
         "lng": lng,
@@ -73,58 +67,51 @@ def _build_location_cookie(lat: float, lng: float, address: str = "") -> str:
     return base64.b64encode(raw.encode()).decode()
 
 
-def _extract_rsc_stores(html: str) -> list[dict]:
-    """Parse DoorDash Next.js RSC streaming payload to extract store records.
-
-    DoorDash embeds store data as:
-      <script>self.__next_f.push([1,"...escaped JSON RSC chunk..."])</script>
-
-    Each chunk, once JSON-parsed (to unescape), contains store records like:
-      {"store_name":"Pizza Place","store_id":"12345","star_rating":"4.5",
-       "store_display_asap_time":"30 min","store_distance_in_miles":0.5, ...}
-    """
-    # Collect all RSC string chunks
+def _extract_rsc_text(html: str) -> str:
+    """Extract and combine all RSC text chunks from the HTML page."""
     combined = []
-    # Match the argument of each push call — it's a JSON string or [int, string]
     pattern = re.compile(
         r'self\.__next_f\.push\(\s*\[1\s*,\s*("(?:[^"\\]|\\.)*")\s*\]\s*\)',
         re.DOTALL,
     )
     for m in pattern.finditer(html):
         try:
-            chunk = json.loads(m.group(1))  # unescape the JSON string
+            chunk = json.loads(m.group(1))
             combined.append(chunk)
         except (json.JSONDecodeError, ValueError):
             pass
+    return "".join(combined)
 
-    full_text = "".join(combined)
+
+def _extract_rsc_stores(html: str) -> list[dict]:
+    """Parse DoorDash Next.js RSC streaming payload to extract store records
+    with actual fee data from the search page."""
+    full_text = _extract_rsc_text(html)
     if not full_text:
         return []
 
-    # Each store appears as a JSON object embedded in the text.
-    # We match each store_name occurrence and extract a window of text around it
-    # to pull sibling fields, then parse them out individually.
     stores = []
     seen_ids: set = set()
 
-    # Find each store block by locating "store_id":"..." and grabbing context
-    # Use a broad regex to find a chunk that includes both store_id and store_name
-    store_block_pattern = re.compile(
-        r'\{[^{}]*"store_id":"(\d+)"[^{}]*"store_name":"([^"]+)"[^{}]*\}|'
-        r'\{[^{}]*"store_name":"([^"]+)"[^{}]*"store_id":"(\d+)"[^{}]*\}',
-        re.DOTALL,
-    )
-
-    # Broader approach: find store_id and collect surrounding JSON object
     for m in re.finditer(r'"store_id":"(\d+)"', full_text):
         store_id = m.group(1)
         if store_id in seen_ids:
             continue
 
-        # Extract a window of characters around this match to find sibling fields
-        start = max(0, m.start() - 1500)
-        end = min(len(full_text), m.end() + 1500)
-        window = full_text[start:end]
+        # Find the enclosing JSON-like object by searching for { before the match
+        # Use a tighter window to avoid capturing data from adjacent stores
+        obj_start = full_text.rfind("{", max(0, m.start() - 800), m.start())
+        if obj_start == -1:
+            obj_start = max(0, m.start() - 500)
+
+        # Find the matching closing brace (approximate - look for next store_id or limit)
+        next_store = re.search(r'"store_id":"', full_text[m.end():])
+        if next_store:
+            obj_end = min(m.end() + next_store.start(), m.end() + 2000)
+        else:
+            obj_end = min(len(full_text), m.end() + 2000)
+
+        window = full_text[obj_start:obj_end]
 
         def _field(field: str) -> Optional[str]:
             fm = re.search(rf'"{re.escape(field)}":"([^"]*)"', window)
@@ -137,26 +124,289 @@ def _extract_rsc_stores(html: str) -> list[dict]:
             except (ValueError, TypeError):
                 return None
 
+        def _money_field(field: str) -> float:
+            """Extract a money field - DoorDash uses cents (unit_amount) or dollar strings."""
+            # Try unit_amount pattern: "delivery_fee":{"unit_amount":299,...}
+            fm = re.search(
+                rf'"{re.escape(field)}":\s*\{{\s*"unit_amount":\s*(\d+)',
+                window,
+            )
+            if fm:
+                try:
+                    return round(int(fm.group(1)) / 100, 2)
+                except (ValueError, TypeError):
+                    pass
+            # Try display_string pattern: "delivery_fee":{"display_string":"$2.99",...}
+            fm = re.search(
+                rf'"{re.escape(field)}":\s*\{{[^}}]*"display_string":"(\$?[\d.]+)"',
+                window,
+            )
+            if fm:
+                try:
+                    return round(float(fm.group(1).replace("$", "")), 2)
+                except (ValueError, TypeError):
+                    pass
+            # Try simple numeric: "delivery_fee":299
+            fm = re.search(rf'"{re.escape(field)}":(\d+)', window)
+            if fm:
+                val = int(fm.group(1))
+                if val > 100:
+                    return round(val / 100, 2)
+                return round(val / 1, 2)  # Already dollars if < 100
+            # Try dollar string: "delivery_fee":"$2.99" or "delivery_fee":"2.99"
+            fm = re.search(rf'"{re.escape(field)}":"\$?([\d.]+)"', window)
+            if fm:
+                try:
+                    return round(float(fm.group(1)), 2)
+                except (ValueError, TypeError):
+                    pass
+            return 0.0
+
         name = _field("store_name")
         if not name:
             continue
 
         seen_ids.add(store_id)
+
+        # Extract fee data - try multiple field names DoorDash uses
+        delivery_fee = 0.0
+        service_fee = 0.0
+
+        # Try various delivery fee field patterns
+        for fee_field in ["delivery_fee", "deliveryFee", "delivery_fee_details"]:
+            val = _money_field(fee_field)
+            if val > 0:
+                delivery_fee = val
+                break
+
+        # Also look for "$X.XX delivery fee" or "Delivery Fee $X.XX" text
+        if delivery_fee == 0.0:
+            fee_text_match = re.search(
+                r'\$(\d+\.?\d*)\s*delivery\s*fee',
+                window,
+                re.IGNORECASE,
+            )
+            if fee_text_match:
+                try:
+                    delivery_fee = round(float(fee_text_match.group(1)), 2)
+                except ValueError:
+                    pass
+
+        # Try various service fee field patterns
+        for fee_field in ["service_fee", "serviceFee", "service_fee_details"]:
+            val = _money_field(fee_field)
+            if val > 0:
+                service_fee = val
+                break
+
+        # Check for header_text with fee info: "$$2.99 delivery fee"
+        header_text = _field("header_text") or ""
+        if delivery_fee == 0.0 and header_text:
+            fee_match = re.search(r'\$(\d+\.?\d*)', header_text)
+            if fee_match:
+                try:
+                    delivery_fee = round(float(fee_match.group(1)), 2)
+                except ValueError:
+                    pass
+
+        # Extract promo text
+        promo = None
+        promo_text = _field("promotion_delivery_fee") or _field("promo_text")
+        if promo_text:
+            promo = promo_text
+
+        # Check for "$0 delivery fee" patterns indicating a promo
+        free_delivery_match = re.search(
+            r'(\$0(?:\.00)?\s+delivery\s+fee[^"]*)',
+            window,
+            re.IGNORECASE,
+        )
+        if free_delivery_match:
+            promo = free_delivery_match.group(1).strip()
+            delivery_fee = 0.0
+
+        # Check for num_ratings
+        num_ratings = _num_field("num_ratings")
+
         stores.append({
             "store_id": store_id,
             "store_name": name,
             "star_rating": _field("star_rating"),
+            "num_ratings": int(num_ratings) if num_ratings else None,
             "store_display_asap_time": _field("store_display_asap_time"),
             "store_distance_in_miles": _num_field("store_distance_in_miles"),
-            "store_latitude": _num_field("store_latitude"),
-            "store_longitude": _num_field("store_longitude"),
+            "delivery_fee": delivery_fee,
+            "service_fee": service_fee,
+            "promo_text": promo,
         })
 
     return stores
 
 
+def _extract_menu_items(html: str) -> list[MenuItem]:
+    """Extract menu items with prices from a DoorDash store detail page RSC payload."""
+    full_text = _extract_rsc_text(html)
+    if not full_text:
+        return []
+
+    menu_items = []
+    seen_items: set = set()
+
+    # DoorDash embeds menu items in various formats in the RSC payload.
+    # Look for item patterns with name and price.
+
+    # Pattern 1: JSON-like objects with "item_id" and nearby "item_name"/"price"
+    # Use a tight forward-only window from the item_id to avoid capturing
+    # fields from adjacent items. Also look backward for enclosing brace.
+    for m in re.finditer(r'"item_id":"(\d+)"', full_text):
+        item_id = m.group(1)
+        if item_id in seen_items:
+            continue
+
+        # Find the enclosing JSON-like object by looking for { before and } after
+        obj_start = full_text.rfind("{", max(0, m.start() - 500), m.start())
+        if obj_start == -1:
+            obj_start = max(0, m.start() - 300)
+        obj_end = full_text.find("}", m.end())
+        if obj_end == -1 or (obj_end - obj_start) > 3000:
+            obj_end = min(len(full_text), m.end() + 500)
+        else:
+            obj_end += 1  # include the closing brace
+
+        window = full_text[obj_start:obj_end]
+
+        # Extract item fields from the tight window
+        name_match = re.search(r'"item_name":"([^"]+)"', window)
+        if not name_match:
+            name_match = re.search(r'"name":"([^"]+)"', window)
+        if not name_match:
+            continue
+
+        item_name = name_match.group(1)
+        if not item_name or len(item_name) < 2:
+            continue
+
+        # Skip duplicates by name
+        if item_name.lower() in seen_items:
+            continue
+
+        # Extract price - try unit_amount first (cents), then display price
+        price = 0.0
+        price_match = re.search(r'"unit_amount":(\d+)', window)
+        if price_match:
+            try:
+                price = round(int(price_match.group(1)) / 100, 2)
+            except ValueError:
+                pass
+
+        if price == 0.0:
+            price_match = re.search(r'"display_price":"\$?([\d.]+)"', window)
+            if price_match:
+                try:
+                    price = round(float(price_match.group(1)), 2)
+                except ValueError:
+                    pass
+
+        if price == 0.0:
+            price_match = re.search(r'"price":(\d+)', window)
+            if price_match:
+                try:
+                    val = int(price_match.group(1))
+                    price = round(val / 100, 2) if val >= 100 else float(val)
+                except ValueError:
+                    pass
+
+        if price <= 0:
+            continue
+
+        # Extract description
+        desc_match = re.search(r'"item_description":"([^"]*)"', window)
+        if not desc_match:
+            desc_match = re.search(r'"description":"([^"]*)"', window)
+        description = desc_match.group(1) if desc_match else None
+        if description and len(description) < 3:
+            description = None
+
+        # Extract image
+        img_match = re.search(r'"image_url":"(https?://[^"]+)"', window)
+        if not img_match:
+            img_match = re.search(r'"imageUrl":"(https?://[^"]+)"', window)
+        image_url = img_match.group(1) if img_match else None
+
+        seen_items.add(item_name.lower())
+        seen_items.add(item_id)
+
+        menu_items.append(MenuItem(
+            name=item_name,
+            description=description,
+            price=price,
+            image_url=image_url,
+        ))
+
+        if len(menu_items) >= 50:
+            break
+
+    # Pattern 2: Alternative approach - look for displayable items with prices
+    # DoorDash sometimes uses "sortedItemsList" or "menuItems" arrays
+    if not menu_items:
+        # Try to find items by looking for price + name proximity
+        for m in re.finditer(r'"name":"([^"]{3,80})"', full_text):
+            item_name = m.group(1)
+            # Skip non-food items (category names, etc.)
+            if item_name.lower() in seen_items:
+                continue
+            if any(skip in item_name.lower() for skip in [
+                "delivery", "pickup", "schedule", "menu", "category",
+                "popular", "featured", "section", "doordash", "store",
+            ]):
+                continue
+
+            start = max(0, m.start() - 800)
+            end = min(len(full_text), m.end() + 800)
+            window = full_text[start:end]
+
+            # Must have a price nearby
+            price_match = re.search(r'"unit_amount":(\d+)', window)
+            if not price_match:
+                price_match = re.search(r'"price":(\d+)', window)
+            if not price_match:
+                price_match = re.search(r'"display_price":"\$?([\d.]+)"', window)
+
+            if not price_match:
+                continue
+
+            try:
+                val = price_match.group(1).replace("$", "")
+                price = float(val)
+                if price >= 100:
+                    price = round(price / 100, 2)
+                if price <= 0 or price > 200:
+                    continue
+            except ValueError:
+                continue
+
+            desc_match = re.search(r'"description":"([^"]{3,200})"', window)
+            description = desc_match.group(1) if desc_match else None
+
+            img_match = re.search(r'"image_url":"(https?://[^"]+)"', window)
+            image_url = img_match.group(1) if img_match else None
+
+            seen_items.add(item_name.lower())
+            menu_items.append(MenuItem(
+                name=item_name,
+                description=description,
+                price=round(price, 2),
+                image_url=image_url,
+            ))
+
+            if len(menu_items) >= 50:
+                break
+
+    return menu_items
+
+
 def _parse_eta(eta_str: Optional[str]) -> int:
-    """Parse '30 min' → 30, '25-35 min' → 25, None → 30."""
+    """Parse '30 min' -> 30, '25-35 min' -> 25, None -> 30."""
     if not eta_str:
         return 30
     m = re.search(r"(\d+)", eta_str)
@@ -171,7 +421,6 @@ class DoorDashScraper(BaseScraper):
 
         url = DD_SEARCH_URL.format(query=quote(query, safe=""))
 
-        # Build location cookie so DoorDash SSR localises results to the user
         loc_cookie = _build_location_cookie(lat, lng, location)
         cookie_header = f"dd_delivery_address={loc_cookie}"
 
@@ -226,20 +475,26 @@ class DoorDashScraper(BaseScraper):
                 except (ValueError, TypeError):
                     pass
 
+                rating_count = store.get("num_ratings")
+
                 eta = _parse_eta(store.get("store_display_asap_time"))
                 url = f"https://www.doordash.com/store/{store_id}/"
+
+                delivery_fee = store.get("delivery_fee", 0.0)
+                service_fee = store.get("service_fee", 0.0)
+                promo = store.get("promo_text")
 
                 results.append(PlatformResult(
                     platform=Platform.DOORDASH,
                     restaurant_name=name,
                     restaurant_id=store_id,
                     restaurant_url=url,
-                    delivery_fee=0.0,   # DoorDash shows $0 for first order promotions
-                    service_fee=0.0,
+                    delivery_fee=delivery_fee,
+                    service_fee=service_fee,
                     estimated_delivery_minutes=eta,
                     rating=rating,
-                    rating_count=None,
-                    promo_text="$0 delivery fee, first order",
+                    rating_count=rating_count,
+                    promo_text=promo,
                     fetched_at=now,
                 ))
             except Exception as e:
@@ -251,7 +506,7 @@ class DoorDashScraper(BaseScraper):
     async def get_restaurant(
         self, restaurant_id: str, location: str
     ) -> Optional[PlatformResult]:
-        """Fetch individual restaurant details from the store page HTML."""
+        """Fetch full restaurant details + menu from the store page RSC payload."""
         try:
             lat, lng = await geocode(location)
             loc_cookie = _build_location_cookie(lat, lng, location)
@@ -262,17 +517,119 @@ class DoorDashScraper(BaseScraper):
             }
             url = f"https://www.doordash.com/store/{restaurant_id}/"
 
-            async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                 resp = await client.get(url, headers=headers)
 
             if resp.status_code != 200:
+                logger.warning(f"[DoorDash] Store page returned {resp.status_code} for {restaurant_id}")
                 return None
 
+            html = resp.text
+
             # Extract name from page title
-            title_m = re.search(r"<title>([^<]+)</title>", resp.text)
+            title_m = re.search(r"<title>([^<]+)</title>", html)
             name = ""
             if title_m:
-                name = title_m.group(1).split("|")[0].split("-")[0].strip()
+                # Title format: "Restaurant Name - Delivery Menu | DoorDash"
+                raw_title = title_m.group(1)
+                name = raw_title.split("|")[0].split(" - ")[0].strip()
+
+            # Extract store data from RSC payload
+            full_text = _extract_rsc_text(html)
+
+            delivery_fee = 0.0
+            service_fee = 0.0
+            eta = 30
+            rating = None
+            rating_count = None
+            promo = None
+
+            if full_text:
+                # Look for fee data in the store detail RSC
+                # Delivery fee
+                for pattern in [
+                    r'"delivery_fee":\s*\{\s*"unit_amount":\s*(\d+)',
+                    r'"deliveryFee":\s*(\d+)',
+                    r'"delivery_fee":(\d+)',
+                ]:
+                    fm = re.search(pattern, full_text)
+                    if fm:
+                        try:
+                            val = int(fm.group(1))
+                            delivery_fee = round(val / 100, 2) if val >= 100 else float(val)
+                            break
+                        except ValueError:
+                            pass
+
+                # Dollar string pattern
+                if delivery_fee == 0.0:
+                    fm = re.search(r'"delivery_fee":\s*\{[^}]*"display_string":"?\$?([\d.]+)', full_text)
+                    if fm:
+                        try:
+                            delivery_fee = round(float(fm.group(1)), 2)
+                        except ValueError:
+                            pass
+
+                # Service fee
+                for pattern in [
+                    r'"service_fee":\s*\{\s*"unit_amount":\s*(\d+)',
+                    r'"serviceFee":\s*(\d+)',
+                    r'"service_fee":(\d+)',
+                ]:
+                    fm = re.search(pattern, full_text)
+                    if fm:
+                        try:
+                            val = int(fm.group(1))
+                            service_fee = round(val / 100, 2) if val >= 100 else float(val)
+                            break
+                        except ValueError:
+                            pass
+
+                # ETA
+                eta_match = re.search(r'"asap_time":\s*(\d+)', full_text)
+                if not eta_match:
+                    eta_match = re.search(r'"store_display_asap_time":"([^"]+)"', full_text)
+                if eta_match:
+                    try:
+                        eta_val = eta_match.group(1)
+                        nums = re.findall(r'\d+', eta_val)
+                        if nums:
+                            eta = int(nums[0])
+                    except (ValueError, IndexError):
+                        pass
+
+                # Rating
+                rating_match = re.search(r'"star_rating":"([\d.]+)"', full_text)
+                if not rating_match:
+                    rating_match = re.search(r'"averageRating":([\d.]+)', full_text)
+                if rating_match:
+                    try:
+                        rating = float(rating_match.group(1))
+                    except ValueError:
+                        pass
+
+                # Rating count
+                count_match = re.search(r'"num_ratings":(\d+)', full_text)
+                if not count_match:
+                    count_match = re.search(r'"numRatings":(\d+)', full_text)
+                if count_match:
+                    try:
+                        rating_count = int(count_match.group(1))
+                    except ValueError:
+                        pass
+
+                # Promo
+                promo_match = re.search(r'"promotion_delivery_fee":"([^"]+)"', full_text)
+                if not promo_match:
+                    free_match = re.search(r'(\$0(?:\.00)?\s+delivery\s+fee[^"]*)', full_text, re.IGNORECASE)
+                    if free_match:
+                        promo = free_match.group(1).strip()
+                        delivery_fee = 0.0
+                else:
+                    promo = promo_match.group(1)
+
+            # Extract menu items
+            menu_items = _extract_menu_items(html)
 
             now = datetime.now(timezone.utc).isoformat()
             return PlatformResult(
@@ -280,9 +637,13 @@ class DoorDashScraper(BaseScraper):
                 restaurant_name=name or f"Store {restaurant_id}",
                 restaurant_id=restaurant_id,
                 restaurant_url=url,
-                delivery_fee=0.0,
-                service_fee=0.0,
-                estimated_delivery_minutes=30,
+                menu_items=menu_items,
+                delivery_fee=delivery_fee,
+                service_fee=service_fee,
+                estimated_delivery_minutes=eta,
+                rating=rating,
+                rating_count=rating_count,
+                promo_text=promo,
                 fetched_at=now,
             )
         except Exception as e:

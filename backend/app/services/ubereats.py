@@ -314,11 +314,23 @@ class UberEatsScraper(BaseScraper):
 
 
 def _cents_to_dollars(value) -> float:
+    """Convert a value to dollars. UberEats API returns prices in cents (integers).
+    Values >= 100 are treated as cents. Values < 100 with decimals are treated as dollars.
+    """
     if value is None:
         return 0.0
     try:
         v = float(value)
-        return round(v, 2) if abs(v) < 50 else round(v / 100, 2)
+        if v == 0:
+            return 0.0
+        # UberEats prices are in cents when they're large integers
+        if abs(v) >= 100:
+            return round(v / 100, 2)
+        # Values between 10-99 with no decimal portion are likely cents
+        if abs(v) >= 10 and v == int(v):
+            return round(v / 100, 2)
+        # Small values or values with decimals are already dollars
+        return round(v, 2)
     except (ValueError, TypeError):
         return 0.0
 

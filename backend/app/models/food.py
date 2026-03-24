@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 from enum import Enum
 
 
@@ -14,6 +14,14 @@ class MenuItem(BaseModel):
     description: Optional[str] = None
     price: float
     image_url: Optional[str] = None
+
+
+class MenuItemComparison(BaseModel):
+    """Side-by-side price comparison for the same menu item across platforms."""
+    item_name: str
+    prices: Dict[str, Optional[float]]  # platform -> price (None if not available)
+    cheapest_platform: Optional[str] = None
+    price_difference: float = 0.0  # max price - min price
 
 
 class PlatformResult(BaseModel):
@@ -39,6 +47,8 @@ class AggregatedResult(BaseModel):
     platforms: List[PlatformResult]
     best_deal_platform: Optional[Platform] = None
     total_cost_by_platform: dict = {}
+    menu_comparison: List[MenuItemComparison] = []
+    avg_menu_markup_by_platform: Dict[str, float] = {}  # platform -> avg markup %
     cached: bool = False
 
 

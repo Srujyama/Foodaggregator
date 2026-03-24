@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
-import { ChevronRight, Trophy } from 'lucide-react'
-import { rankByBestDeal, computeTotalCost, getSavings } from '../utils/sorting.js'
+import { ChevronRight, Trophy, UtensilsCrossed } from 'lucide-react'
+import { rankByBestDeal, computeTotalCost, getSavings, getMenuSavings } from '../utils/sorting.js'
 import { formatPrice, formatETA, slugify } from '../lib/utils.js'
 import PlatformBadge from './PlatformBadge.jsx'
 import { useSearchContext } from '../context/SearchContext.jsx'
@@ -10,6 +10,7 @@ export default function RestaurantResult({ result }) {
   const ranked = rankByBestDeal(result)
   const bestPlatform = ranked[0]
   const savings = getSavings(result)
+  const menuSavings = getMenuSavings(result)
 
   return (
     <div className="bg-white rounded-2xl border border-gray-200 hover:border-orange-200 hover:shadow-md transition-all overflow-hidden">
@@ -26,7 +27,13 @@ export default function RestaurantResult({ result }) {
             {savings > 0.01 && (
               <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
                 <Trophy className="w-3 h-3 text-amber-400" />
-                Save up to {formatPrice(savings)}
+                Save up to {formatPrice(savings)} in fees
+              </span>
+            )}
+            {menuSavings > 0.01 && (
+              <span className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5">
+                <UtensilsCrossed className="w-3 h-3 text-blue-400" />
+                Save up to {formatPrice(menuSavings)} on menu items
               </span>
             )}
           </div>

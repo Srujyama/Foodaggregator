@@ -273,7 +273,7 @@ class AggregatorService:
         )
 
         # Enrich top results with menu data (parallel, best-effort)
-        await self._enrich_menus(aggregated[:8], location)
+        await self._enrich_menus(aggregated[:12], location)
 
         return aggregated
 

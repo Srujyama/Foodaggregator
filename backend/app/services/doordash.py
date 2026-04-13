@@ -414,7 +414,12 @@ def _parse_eta(eta_str: Optional[str]) -> int:
 
 
 def _cffi_get(url: str, cookies: str = "", timeout: int = 15) -> Optional[str]:
-    """Fetch a URL using curl_cffi with Chrome TLS impersonation (sync)."""
+    """Fetch a URL using curl_cffi with Chrome TLS impersonation (sync).
+
+    DoorDash uses Cloudflare which blocks datacenter IPs even with correct TLS
+    fingerprints. This works from residential IPs but may get challenged from
+    cloud servers.
+    """
     try:
         headers = {
             "Referer": "https://www.doordash.com/",
@@ -433,6 +438,20 @@ def _cffi_get(url: str, cookies: str = "", timeout: int = 15) -> Optional[str]:
             logger.warning(f"[DoorDash] curl_cffi returned {resp.status_code} for {url[:80]}")
             return None
         html = resp.text
+
+        # Detect Cloudflare challenge/waiting room
+        if "waitingroom" in html.lower() or (
+            "challenge" in html.lower() and len(html) < 50000
+        ):
+            logger.warning("[DoorDash] Got Cloudflare challenge page (datacenter IP blocked)")
+            return None
+
+        # Check if we got actual page content (RSC data)
+        if "store_id" not in html and "store_name" not in html and "__next_f.push" in html:
+            # Got RSC shell but no store data
+            logger.warning("[DoorDash] Got empty RSC shell (no store data)")
+            return None
+
         logger.info(f"[DoorDash] curl_cffi got {len(html)} bytes for {url[:60]}")
         return html
     except Exception as e:

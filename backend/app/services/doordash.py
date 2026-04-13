@@ -60,7 +60,10 @@ def _extract_rsc_stores(html: str) -> list[dict]:
     with actual fee data from the search page."""
     full_text = _extract_rsc_text(html)
     if not full_text:
+        logger.warning("[DoorDash] RSC text extraction returned empty")
         return []
+
+    logger.info(f"[DoorDash] RSC text length: {len(full_text)}")
 
     stores = []
     seen_ids: set = set()
@@ -354,10 +357,12 @@ def _parse_eta(eta_str: Optional[str]) -> int:
 def _cffi_get(url: str, cookies: str = "", timeout: int = 15) -> Optional[str]:
     """Fetch a URL using curl_cffi with Chrome TLS impersonation (sync)."""
     try:
-        headers = {}
+        headers = {
+            "Referer": "https://www.doordash.com/",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
         if cookies:
             headers["Cookie"] = cookies
-        headers["Referer"] = "https://www.doordash.com/"
         resp = cffi_requests.get(
             url,
             impersonate="chrome",
@@ -368,7 +373,9 @@ def _cffi_get(url: str, cookies: str = "", timeout: int = 15) -> Optional[str]:
         if resp.status_code != 200:
             logger.warning(f"[DoorDash] curl_cffi returned {resp.status_code} for {url[:80]}")
             return None
-        return resp.text
+        html = resp.text
+        logger.info(f"[DoorDash] curl_cffi got {len(html)} bytes for {url[:60]}")
+        return html
     except Exception as e:
         logger.warning(f"[DoorDash] curl_cffi request failed: {e}")
         return None

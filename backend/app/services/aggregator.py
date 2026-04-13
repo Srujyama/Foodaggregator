@@ -272,7 +272,51 @@ class AggregatorService:
             key=lambda a: min(_compute_total_cost(p) for p in a.platforms)
         )
 
+        # Enrich top results with menu data (parallel, best-effort)
+        await self._enrich_menus(aggregated[:8], location)
+
         return aggregated
+
+    async def _enrich_menus(
+        self, results: list[AggregatedResult], location: str
+    ) -> None:
+        """Fetch menu items for the top search results in parallel."""
+        menu_tasks = []
+        task_info = []  # (result_idx, platform_idx)
+
+        for r_idx, result in enumerate(results):
+            for p_idx, platform_result in enumerate(result.platforms):
+                if platform_result.menu_items:
+                    continue  # Already has menu
+                scraper = self.scrapers.get(platform_result.platform)
+                if scraper:
+                    menu_tasks.append(
+                        asyncio.create_task(
+                            asyncio.wait_for(
+                                scraper.get_restaurant(
+                                    platform_result.restaurant_id, location
+                                ),
+                                timeout=10.0,
+                            )
+                        )
+                    )
+                    task_info.append((r_idx, p_idx))
+
+        if not menu_tasks:
+            return
+
+        done = await asyncio.gather(*menu_tasks, return_exceptions=True)
+
+        for (r_idx, p_idx), detail in zip(task_info, done):
+            if isinstance(detail, Exception) or detail is None:
+                continue
+            if detail.menu_items:
+                results[r_idx].platforms[p_idx].menu_items = detail.menu_items
+                # Also update fees if the detail has better data
+                if detail.delivery_fee > 0:
+                    results[r_idx].platforms[p_idx].delivery_fee = detail.delivery_fee
+                if detail.service_fee > 0:
+                    results[r_idx].platforms[p_idx].service_fee = detail.service_fee
 
     async def get_restaurant(self, name: str, location: str) -> Optional[AggregatedResult]:
         """Get detailed data for a specific restaurant across all platforms.

@@ -285,22 +285,40 @@ class UberEatsScraper(BaseScraper):
             now = datetime.now(timezone.utc).isoformat()
 
             menu_items = []
-            for _sid, section in (store.get("catalogSectionsMap") or {}).items():
-                items = (
-                    section.get("payload", {})
-                    .get("standardItemsPayload", {})
-                    .get("catalogItems", [])
-                )
-                for item in items[:50]:
-                    try:
-                        menu_items.append(MenuItem(
-                            name=item.get("title", ""),
-                            description=item.get("itemDescription"),
-                            price=_cents_to_dollars(item.get("price") or 0),
-                            image_url=item.get("imageUrl"),
-                        ))
-                    except Exception:
+            seen_names = set()
+            for _sid, sections_list in (store.get("catalogSectionsMap") or {}).items():
+                # 2026 format: each value is a LIST of section objects
+                if not isinstance(sections_list, list):
+                    sections_list = [sections_list]
+                for section in sections_list:
+                    if not isinstance(section, dict):
                         continue
+                    items = (
+                        section.get("payload", {})
+                        .get("standardItemsPayload", {})
+                        .get("catalogItems", [])
+                    )
+                    for item in items:
+                        try:
+                            name = item.get("title", "")
+                            if not name or name.lower() in seen_names:
+                                continue
+                            price = _cents_to_dollars(item.get("price") or 0)
+                            if price <= 0:
+                                continue
+                            seen_names.add(name.lower())
+                            menu_items.append(MenuItem(
+                                name=name,
+                                description=item.get("itemDescription"),
+                                price=price,
+                                image_url=item.get("imageUrl"),
+                            ))
+                        except Exception:
+                            continue
+                        if len(menu_items) >= 100:
+                            break
+                    if len(menu_items) >= 100:
+                        break
 
             fare = store.get("fareInfo") or {}
             slug = store.get("slug") or restaurant_id

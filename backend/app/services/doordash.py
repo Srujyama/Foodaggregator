@@ -1,17 +1,9 @@
 """
-DoorDash scraper - Fixed March 2026.
+DoorDash scraper - April 2026.
 
-Strategy:
-1. SEARCH: DoorDash's /search/store/{query}/ page uses Next.js RSC streaming.
-   Store data is embedded in <script>self.__next_f.push([1,"..."])</script> tags.
-   We extract store metadata AND fee data (delivery_fee, service_fee) from these
-   RSC chunks. Location is passed via the `dd_delivery_address` cookie.
-
-2. RESTAURANT DETAIL: The /store/{id}/ page also uses RSC streaming. Menu items
-   with prices are embedded in the same self.__next_f.push pattern. We extract
-   full menu sections with item names, descriptions, prices, and images.
-
-No GraphQL, no auth required -- just HTTP GET + HTML/RSC parse.
+Uses curl_cffi to impersonate Chrome's TLS fingerprint, bypassing Cloudflare.
+DoorDash's /search/store/{query}/ page uses Next.js RSC streaming.
+Store data is embedded in <script>self.__next_f.push([1,"..."])</script> tags.
 """
 
 import base64
@@ -23,6 +15,7 @@ from typing import Optional
 from urllib.parse import quote
 
 import httpx
+from curl_cffi import requests as cffi_requests
 
 from app.models.food import MenuItem, Platform, PlatformResult
 from app.services.scraper_base import BaseScraper, geocode
@@ -30,27 +23,6 @@ from app.services.scraper_base import BaseScraper, geocode
 logger = logging.getLogger(__name__)
 
 DD_SEARCH_URL = "https://www.doordash.com/search/store/{query}/"
-
-_BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;"
-        "q=0.9,image/avif,image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate",
-    "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"macOS"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Upgrade-Insecure-Requests": "1",
-}
 
 
 def _build_location_cookie(lat: float, lng: float, address: str = "") -> str:
@@ -252,63 +224,40 @@ def _extract_menu_items(html: str) -> list[MenuItem]:
     menu_items = []
     seen_items: set = set()
 
-    # DoorDash embeds menu items in various formats in the RSC payload.
-    # Look for item patterns with name and price.
-
-    # Pattern 1: JSON-like objects with "item_id" and nearby "item_name"/"price"
-    # Use a tight forward-only window from the item_id to avoid capturing
-    # fields from adjacent items. Also look backward for enclosing brace.
-    for m in re.finditer(r'"item_id":"(\d+)"', full_text):
+    # 2026 format: StorePageCarouselItem with name, description, displayPrice, imgUrl
+    for m in re.finditer(
+        r'StorePageCarouselItem","id":"(\d+)","name":"([^"]+)"',
+        full_text,
+    ):
         item_id = m.group(1)
-        if item_id in seen_items:
+        item_name = m.group(2)
+
+        if item_id in seen_items or not item_name or len(item_name) < 2:
             continue
 
-        # Find the enclosing JSON-like object by looking for { before and } after
-        obj_start = full_text.rfind("{", max(0, m.start() - 500), m.start())
-        if obj_start == -1:
-            obj_start = max(0, m.start() - 300)
-        obj_end = full_text.find("}", m.end())
-        if obj_end == -1 or (obj_end - obj_start) > 3000:
-            obj_end = min(len(full_text), m.end() + 500)
-        else:
-            obj_end += 1  # include the closing brace
-
-        window = full_text[obj_start:obj_end]
-
-        # Extract item fields from the tight window
-        name_match = re.search(r'"item_name":"([^"]+)"', window)
-        if not name_match:
-            name_match = re.search(r'"name":"([^"]+)"', window)
-        if not name_match:
-            continue
-
-        item_name = name_match.group(1)
-        if not item_name or len(item_name) < 2:
-            continue
-
-        # Skip duplicates by name
         if item_name.lower() in seen_items:
             continue
 
-        # Extract price - try unit_amount first (cents), then display price
+        # Look forward for price, description, image
+        window = full_text[m.end():m.end() + 800]
+
+        # Description
+        desc_match = re.search(r'"description":"([^"]{0,500})"', window)
+        description = desc_match.group(1) if desc_match else None
+        if description and len(description) < 3:
+            description = None
+
+        # Price: displayPrice is like "$$9.75" or "$9.75"
         price = 0.0
-        price_match = re.search(r'"unit_amount":(\d+)', window)
+        price_match = re.search(r'"displayPrice":"\$*(\d+\.?\d*)"', window)
         if price_match:
             try:
-                price = round(int(price_match.group(1)) / 100, 2)
+                price = round(float(price_match.group(1)), 2)
             except ValueError:
                 pass
 
         if price == 0.0:
-            price_match = re.search(r'"display_price":"\$?([\d.]+)"', window)
-            if price_match:
-                try:
-                    price = round(float(price_match.group(1)), 2)
-                except ValueError:
-                    pass
-
-        if price == 0.0:
-            price_match = re.search(r'"price":(\d+)', window)
+            price_match = re.search(r'"unitAmount":(\d+)', window)
             if price_match:
                 try:
                     val = int(price_match.group(1))
@@ -319,22 +268,12 @@ def _extract_menu_items(html: str) -> list[MenuItem]:
         if price <= 0:
             continue
 
-        # Extract description
-        desc_match = re.search(r'"item_description":"([^"]*)"', window)
-        if not desc_match:
-            desc_match = re.search(r'"description":"([^"]*)"', window)
-        description = desc_match.group(1) if desc_match else None
-        if description and len(description) < 3:
-            description = None
-
-        # Extract image
-        img_match = re.search(r'"image_url":"(https?://[^"]+)"', window)
-        if not img_match:
-            img_match = re.search(r'"imageUrl":"(https?://[^"]+)"', window)
+        # Image
+        img_match = re.search(r'"imgUrl":"(https?://[^"]+)"', window)
         image_url = img_match.group(1) if img_match else None
 
-        seen_items.add(item_name.lower())
         seen_items.add(item_id)
+        seen_items.add(item_name.lower())
 
         menu_items.append(MenuItem(
             name=item_name,
@@ -343,63 +282,62 @@ def _extract_menu_items(html: str) -> list[MenuItem]:
             image_url=image_url,
         ))
 
-        if len(menu_items) >= 50:
+        if len(menu_items) >= 100:
             break
 
-    # Pattern 2: Alternative approach - look for displayable items with prices
-    # DoorDash sometimes uses "sortedItemsList" or "menuItems" arrays
+    # Fallback: old item_id / item_name pattern
     if not menu_items:
-        # Try to find items by looking for price + name proximity
-        for m in re.finditer(r'"name":"([^"]{3,80})"', full_text):
-            item_name = m.group(1)
-            # Skip non-food items (category names, etc.)
-            if item_name.lower() in seen_items:
-                continue
-            if any(skip in item_name.lower() for skip in [
-                "delivery", "pickup", "schedule", "menu", "category",
-                "popular", "featured", "section", "doordash", "store",
-            ]):
+        for m in re.finditer(r'"item_id":"(\d+)"', full_text):
+            item_id = m.group(1)
+            if item_id in seen_items:
                 continue
 
-            start = max(0, m.start() - 800)
-            end = min(len(full_text), m.end() + 800)
-            window = full_text[start:end]
+            window = full_text[max(0, m.start() - 300):min(len(full_text), m.end() + 500)]
 
-            # Must have a price nearby
-            price_match = re.search(r'"unit_amount":(\d+)', window)
-            if not price_match:
-                price_match = re.search(r'"price":(\d+)', window)
-            if not price_match:
-                price_match = re.search(r'"display_price":"\$?([\d.]+)"', window)
-
-            if not price_match:
+            name_match = re.search(r'"item_name":"([^"]+)"', window)
+            if not name_match:
+                name_match = re.search(r'"name":"([^"]+)"', window)
+            if not name_match:
                 continue
 
-            try:
-                val = price_match.group(1).replace("$", "")
-                price = float(val)
-                if price >= 100:
-                    price = round(price / 100, 2)
-                if price <= 0 or price > 200:
-                    continue
-            except ValueError:
+            item_name = name_match.group(1)
+            if not item_name or item_name.lower() in seen_items:
                 continue
 
-            desc_match = re.search(r'"description":"([^"]{3,200})"', window)
+            price = 0.0
+            for pat in [r'"unit_amount":(\d+)', r'"price":(\d+)']:
+                pm = re.search(pat, window)
+                if pm:
+                    val = int(pm.group(1))
+                    price = round(val / 100, 2) if val >= 100 else float(val)
+                    break
+
+            if price <= 0:
+                dp = re.search(r'"display_price":"\$?([\d.]+)"', window)
+                if dp:
+                    price = round(float(dp.group(1)), 2)
+
+            if price <= 0:
+                continue
+
+            desc_match = re.search(r'"description":"([^"]{3,300})"', window)
             description = desc_match.group(1) if desc_match else None
 
             img_match = re.search(r'"image_url":"(https?://[^"]+)"', window)
+            if not img_match:
+                img_match = re.search(r'"imgUrl":"(https?://[^"]+)"', window)
             image_url = img_match.group(1) if img_match else None
 
             seen_items.add(item_name.lower())
+            seen_items.add(item_id)
             menu_items.append(MenuItem(
                 name=item_name,
                 description=description,
-                price=round(price, 2),
+                price=price,
                 image_url=image_url,
             ))
 
-            if len(menu_items) >= 50:
+            if len(menu_items) >= 100:
                 break
 
     return menu_items
@@ -413,6 +351,29 @@ def _parse_eta(eta_str: Optional[str]) -> int:
     return int(m.group(1)) if m else 30
 
 
+def _cffi_get(url: str, cookies: str = "", timeout: int = 15) -> Optional[str]:
+    """Fetch a URL using curl_cffi with Chrome TLS impersonation (sync)."""
+    try:
+        headers = {}
+        if cookies:
+            headers["Cookie"] = cookies
+        headers["Referer"] = "https://www.doordash.com/"
+        resp = cffi_requests.get(
+            url,
+            impersonate="chrome",
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[DoorDash] curl_cffi returned {resp.status_code} for {url[:80]}")
+            return None
+        return resp.text
+    except Exception as e:
+        logger.warning(f"[DoorDash] curl_cffi request failed: {e}")
+        return None
+
+
 class DoorDashScraper(BaseScraper):
     PLATFORM_NAME = "doordash"
 
@@ -424,26 +385,14 @@ class DoorDashScraper(BaseScraper):
         loc_cookie = _build_location_cookie(lat, lng, location)
         cookie_header = f"dd_delivery_address={loc_cookie}"
 
-        headers = {
-            **_BROWSER_HEADERS,
-            "Cookie": cookie_header,
-            "Referer": "https://www.doordash.com/",
-        }
-
         try:
-            async with httpx.AsyncClient(
-                timeout=15.0,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(url, headers=headers)
+            # Use curl_cffi in a thread to avoid blocking the event loop
+            import asyncio
+            html = await asyncio.to_thread(_cffi_get, url, cookie_header)
 
-            if resp.status_code != 200:
-                logger.warning(
-                    f"[DoorDash] Search page returned {resp.status_code} for '{query}'"
-                )
+            if not html:
                 return []
 
-            html = resp.text
             stores = _extract_rsc_stores(html)
             if not stores:
                 logger.warning(f"[DoorDash] No stores found in RSC payload for '{query}'")
@@ -516,21 +465,14 @@ class DoorDashScraper(BaseScraper):
         try:
             lat, lng = await geocode(location)
             loc_cookie = _build_location_cookie(lat, lng, location)
-            headers = {
-                **_BROWSER_HEADERS,
-                "Cookie": f"dd_delivery_address={loc_cookie}",
-                "Referer": "https://www.doordash.com/search/",
-            }
+            cookie_header = f"dd_delivery_address={loc_cookie}"
             url = f"https://www.doordash.com/store/{restaurant_id}/"
 
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-                resp = await client.get(url, headers=headers)
+            import asyncio
+            html = await asyncio.to_thread(_cffi_get, url, cookie_header)
 
-            if resp.status_code != 200:
-                logger.warning(f"[DoorDash] Store page returned {resp.status_code} for {restaurant_id}")
+            if not html:
                 return None
-
-            html = resp.text
 
             # Extract name from page title
             title_m = re.search(r"<title>([^<]+)</title>", html)

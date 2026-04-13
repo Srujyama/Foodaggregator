@@ -30,9 +30,16 @@ class PlatformResult(BaseModel):
     restaurant_id: str
     restaurant_url: str
     menu_items: List[MenuItem] = []
+    # Delivery pricing
     delivery_fee: float
     service_fee: float
     estimated_delivery_minutes: int
+    # Pickup pricing
+    pickup_available: bool = True
+    pickup_fee: float = 0.0
+    pickup_service_fee: float = 0.0
+    estimated_pickup_minutes: Optional[int] = None
+    # Other
     minimum_order: Optional[float] = None
     rating: Optional[float] = None
     rating_count: Optional[int] = None
@@ -47,6 +54,7 @@ class AggregatedResult(BaseModel):
     platforms: List[PlatformResult]
     best_deal_platform: Optional[Platform] = None
     total_cost_by_platform: dict = {}
+    pickup_cost_by_platform: dict = {}
     menu_comparison: List[MenuItemComparison] = []
     avg_menu_markup_by_platform: Dict[str, float] = {}  # platform -> avg markup %
     cached: bool = False

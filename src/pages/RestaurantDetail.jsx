@@ -18,7 +18,6 @@ export default function RestaurantDetail() {
 
   const { data, loading, error } = useRestaurant(restaurantName, location)
 
-  // Check if there are menu items from any platform
   const hasMenuItems = data?.platforms?.some((p) => p.menu_items?.length > 0)
   const hasMenuComparison = data?.menu_comparison?.length > 0
 
@@ -40,7 +39,7 @@ export default function RestaurantDetail() {
         <>
           {/* Header */}
           <div className="mb-8">
-            <h1 className="text-3xl font-extrabold text-gray-900 mb-1">
+            <h1 className="text-3xl font-black text-gray-900 mb-1">
               {data.restaurant_name}
             </h1>
             {location && <p className="text-gray-400 text-sm">{location}</p>}
@@ -48,7 +47,7 @@ export default function RestaurantDetail() {
               <p className="text-sm text-gray-500 mt-2">
                 Available on {data.platforms.length} platform{data.platforms.length !== 1 ? 's' : ''}
                 {hasMenuComparison && (
-                  <span className="text-amber-600 ml-2">
+                  <span className="text-amber-600 ml-2 font-medium">
                     -- {data.menu_comparison.length} menu item{data.menu_comparison.length !== 1 ? 's' : ''} compared
                   </span>
                 )}
@@ -56,7 +55,7 @@ export default function RestaurantDetail() {
             )}
           </div>
 
-          {/* Fee comparison ranking */}
+          {/* Fee comparison ranking (shows both delivery & pickup) */}
           <div className="mb-8">
             <DealRanking aggregatedResult={data} />
           </div>
@@ -106,7 +105,7 @@ export default function RestaurantDetail() {
                         {platform.menu_items.slice(0, 30).map((item, i) => (
                           <div
                             key={i}
-                            className="flex items-center justify-between px-5 py-3.5 border-b last:border-b-0 border-gray-100 hover:bg-gray-50"
+                            className="flex items-center justify-between px-5 py-3.5 border-b last:border-b-0 border-gray-100 hover:bg-gray-50 transition-colors"
                           >
                             <div className="flex-1 min-w-0">
                               <p className="font-medium text-gray-900 truncate">
@@ -118,7 +117,7 @@ export default function RestaurantDetail() {
                                 </p>
                               )}
                             </div>
-                            <span className="font-semibold text-gray-800 ml-4 shrink-0">
+                            <span className="font-semibold text-gray-800 ml-4 shrink-0 tabular-nums">
                               {formatPrice(item.price)}
                             </span>
                           </div>

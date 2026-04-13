@@ -15,6 +15,7 @@ async def search_restaurants(
     location: str = Query(..., min_length=1, description="Location (city, ZIP, or address)"),
     limit: int = Query(20, ge=1, le=50),
     platforms: str = Query(None, description="Comma-separated platform filter"),
+    mode: str = Query("delivery", description="Order mode: delivery or pickup"),
 ):
     # Check cache
     cached = await get_cached(q, location)

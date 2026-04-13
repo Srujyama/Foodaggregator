@@ -10,7 +10,16 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 }
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
+let db = null
 
-export const db = getFirestore(app)
-export default app
+try {
+  // Only init Firebase if config has a projectId
+  if (firebaseConfig.projectId) {
+    const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
+    db = getFirestore(app)
+  }
+} catch {
+  // Firebase is optional - app works without it
+}
+
+export { db }

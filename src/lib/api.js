@@ -12,7 +12,6 @@ async function fetchWithRetry(url, options = {}) {
   const { retries = 2, retryDelay = 800, timeout = 15000, ...fetchOpts } = options
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    // Create a fresh AbortController for each attempt so prior aborts don't bleed over
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), timeout)
 
@@ -44,6 +43,7 @@ export async function searchRestaurants(query, location, params = {}) {
   url.searchParams.set('location', location)
   if (params.limit) url.searchParams.set('limit', params.limit)
   if (params.platforms) url.searchParams.set('platforms', params.platforms)
+  if (params.mode) url.searchParams.set('mode', params.mode)
   return fetchWithRetry(url.toString())
 }
 

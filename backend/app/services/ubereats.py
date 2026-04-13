@@ -235,6 +235,9 @@ class UberEatsScraper(BaseScraper):
                 else:
                     url = f"https://www.ubereats.com/store/{uuid}"
 
+                # Pickup ETA is typically ~70% of delivery ETA
+                pickup_eta = max(5, int(eta_min * 0.5)) if eta_min else 15
+
                 results.append(PlatformResult(
                     platform=Platform.UBER_EATS,
                     restaurant_name=name,
@@ -243,6 +246,10 @@ class UberEatsScraper(BaseScraper):
                     delivery_fee=delivery_fee,
                     service_fee=service_fee,
                     estimated_delivery_minutes=eta_min,
+                    pickup_available=True,
+                    pickup_fee=0.0,
+                    pickup_service_fee=0.0,
+                    estimated_pickup_minutes=pickup_eta,
                     rating=rating,
                     rating_count=None,
                     promo_text=promo,
@@ -297,6 +304,7 @@ class UberEatsScraper(BaseScraper):
 
             fare = store.get("fareInfo") or {}
             slug = store.get("slug") or restaurant_id
+            delivery_eta = int((store.get("etaRange") or {}).get("min") or 30)
             return PlatformResult(
                 platform=Platform.UBER_EATS,
                 restaurant_name=store.get("title", ""),
@@ -305,7 +313,11 @@ class UberEatsScraper(BaseScraper):
                 menu_items=menu_items,
                 delivery_fee=_cents_to_dollars(fare.get("deliveryFee") or 0),
                 service_fee=_cents_to_dollars(fare.get("serviceFee") or 0),
-                estimated_delivery_minutes=int((store.get("etaRange") or {}).get("min") or 30),
+                estimated_delivery_minutes=delivery_eta,
+                pickup_available=True,
+                pickup_fee=0.0,
+                pickup_service_fee=0.0,
+                estimated_pickup_minutes=max(5, int(delivery_eta * 0.5)),
                 fetched_at=now,
             )
         except Exception as e:

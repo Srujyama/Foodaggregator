@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -22,23 +23,42 @@ DEFAULT_HEADERS = {
 
 GEOCODE_URL = "https://nominatim.openstreetmap.org/search"
 
+# Cache geocode results to avoid hammering Nominatim
+_geocode_cache: dict[str, tuple[float, float]] = {}
+
 
 async def geocode(location: str) -> tuple[float, float]:
-    """Convert a location string to (lat, lng) using Nominatim."""
+    """Convert a location string to (lat, lng) using Nominatim.
+
+    Handles US ZIP codes by appending ', USA' to disambiguate from international locations.
+    """
+    location = location.strip()
+    if location in _geocode_cache:
+        return _geocode_cache[location]
+
+    # If it looks like a bare US zip code, append USA for disambiguation
+    query = location
+    if re.match(r'^\d{5}(-\d{4})?$', location):
+        query = f"{location}, USA"
+
     async with httpx.AsyncClient(timeout=5.0) as client:
         try:
             resp = await client.get(
                 GEOCODE_URL,
-                params={"q": location, "format": "json", "limit": 1},
+                params={"q": query, "format": "json", "limit": 1, "countrycodes": "us"},
                 headers={"User-Agent": "FoodAggregator/1.0 (contact@foodaggregator.app)"},
             )
             resp.raise_for_status()
             data = resp.json()
             if data:
-                return float(data[0]["lat"]), float(data[0]["lon"])
+                result = (float(data[0]["lat"]), float(data[0]["lon"]))
+                _geocode_cache[location] = result
+                return result
         except Exception as e:
             logger.warning(f"Geocoding failed for '{location}': {e}")
+
     # Default to NYC if geocoding fails
+    _geocode_cache[location] = (40.7128, -74.0060)
     return 40.7128, -74.0060
 
 

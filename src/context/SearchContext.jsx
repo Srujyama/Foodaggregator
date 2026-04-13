@@ -8,6 +8,7 @@ export function SearchProvider({ children }) {
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [mode, setMode] = useState('delivery') // 'delivery' or 'pickup'
 
   const value = {
     query,
@@ -20,6 +21,8 @@ export function SearchProvider({ children }) {
     setLoading,
     error,
     setError,
+    mode,
+    setMode,
   }
 
   return <SearchContext.Provider value={value}>{children}</SearchContext.Provider>

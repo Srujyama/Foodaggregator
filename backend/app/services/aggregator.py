@@ -25,6 +25,10 @@ def _compute_total_cost(p: PlatformResult) -> float:
     return p.delivery_fee + p.service_fee
 
 
+def _compute_pickup_cost(p: PlatformResult) -> float:
+    return p.pickup_fee + p.pickup_service_fee
+
+
 def _normalize_name(name: str) -> str:
     """Lowercase and strip common suffixes for better fuzzy matching."""
     name = name.lower().strip()
@@ -195,6 +199,12 @@ def _build_aggregated(query: str, location: str, group: list[PlatformResult]) ->
         for p in group
     }
 
+    pickup_cost_by_platform = {
+        p.platform.value: round(_compute_pickup_cost(p), 2)
+        for p in group
+        if p.pickup_available
+    }
+
     best_platform = min(group, key=_compute_total_cost)
 
     # Build menu comparison if any platform has menu items
@@ -208,6 +218,7 @@ def _build_aggregated(query: str, location: str, group: list[PlatformResult]) ->
         platforms=group,
         best_deal_platform=best_platform.platform,
         total_cost_by_platform=total_cost_by_platform,
+        pickup_cost_by_platform=pickup_cost_by_platform,
         menu_comparison=menu_comparison,
         avg_menu_markup_by_platform=avg_markup,
     )

@@ -5,7 +5,13 @@ export function cn(...inputs) {
 }
 
 export function getApiUrl() {
-  return import.meta.env.VITE_API_URL || 'http://localhost:8000'
+  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL
+  // In production (Vercel), use the Fly.io backend
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
+    return 'https://foodaggregator-api.fly.dev'
+  }
+  // Local dev uses the Vite proxy
+  return ''
 }
 
 export function formatPrice(dollars) {

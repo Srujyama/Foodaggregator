@@ -6,13 +6,14 @@ import { useSearchContext } from '../context/SearchContext.jsx'
 
 export function useSearch() {
   const navigate = useNavigate()
-  const { query, location, setResults, setLoading, setError, setQuery, setLocation } =
+  const { query, location, mode, setResults, setLoading, setError, setQuery, setLocation, setMode } =
     useSearchContext()
 
   const search = useCallback(
-    async (q, loc) => {
+    async (q, loc, m) => {
       const searchQuery = q ?? query
       const searchLocation = loc ?? location
+      const searchMode = m ?? mode
 
       if (!searchQuery.trim() || !searchLocation.trim()) {
         toast.error('Please enter both a food/restaurant and a location.')
@@ -23,9 +24,9 @@ export function useSearch() {
       setError(null)
 
       try {
-        const data = await searchRestaurants(searchQuery, searchLocation)
+        const data = await searchRestaurants(searchQuery, searchLocation, { mode: searchMode })
         setResults(data.results || [])
-        navigate(`/results?q=${encodeURIComponent(searchQuery)}&location=${encodeURIComponent(searchLocation)}`)
+        navigate(`/results?q=${encodeURIComponent(searchQuery)}&location=${encodeURIComponent(searchLocation)}&mode=${searchMode}`)
       } catch (err) {
         const msg = err.message || 'Search failed. Please try again.'
         setError(msg)
@@ -34,8 +35,8 @@ export function useSearch() {
         setLoading(false)
       }
     },
-    [query, location, navigate, setResults, setLoading, setError],
+    [query, location, mode, navigate, setResults, setLoading, setError],
   )
 
-  return { search, setQuery, setLocation }
+  return { search, setQuery, setLocation, setMode }
 }

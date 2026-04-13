@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.config import settings
 from app.models.food import HealthResponse
@@ -21,11 +21,14 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting FoodAggregator API...")
-    init_firebase(
-        service_account_path=settings.firebase_service_account_path,
-        service_account_json=settings.firebase_service_account_json,
-        project_id=settings.firebase_project_id,
-    )
+    try:
+        init_firebase(
+            service_account_path=settings.firebase_service_account_path,
+            service_account_json=settings.firebase_service_account_json,
+            project_id=settings.firebase_project_id,
+        )
+    except Exception as e:
+        logger.warning(f"Firebase init skipped: {e}")
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Allowed origins: {settings.origins}")
     yield
@@ -54,6 +57,11 @@ app.add_middleware(
 app.include_router(search.router, prefix="/api", tags=["search"])
 app.include_router(restaurant.router, prefix="/api", tags=["restaurant"])
 app.include_router(deals.router, prefix="/api", tags=["deals"])
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse("https://foodaggregator.vercel.app/")
 
 
 @app.get("/health", response_model=HealthResponse, tags=["health"])

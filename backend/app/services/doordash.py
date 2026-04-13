@@ -484,6 +484,8 @@ class DoorDashScraper(BaseScraper):
                 service_fee = store.get("service_fee", 0.0)
                 promo = store.get("promo_text")
 
+                pickup_eta = max(5, int(eta * 0.5)) if eta else 15
+
                 results.append(PlatformResult(
                     platform=Platform.DOORDASH,
                     restaurant_name=name,
@@ -492,6 +494,10 @@ class DoorDashScraper(BaseScraper):
                     delivery_fee=delivery_fee,
                     service_fee=service_fee,
                     estimated_delivery_minutes=eta,
+                    pickup_available=True,
+                    pickup_fee=0.0,
+                    pickup_service_fee=0.0,
+                    estimated_pickup_minutes=pickup_eta,
                     rating=rating,
                     rating_count=rating_count,
                     promo_text=promo,
@@ -632,6 +638,7 @@ class DoorDashScraper(BaseScraper):
             menu_items = _extract_menu_items(html)
 
             now = datetime.now(timezone.utc).isoformat()
+            pickup_eta = max(5, int(eta * 0.5)) if eta else 15
             return PlatformResult(
                 platform=Platform.DOORDASH,
                 restaurant_name=name or f"Store {restaurant_id}",
@@ -641,6 +648,10 @@ class DoorDashScraper(BaseScraper):
                 delivery_fee=delivery_fee,
                 service_fee=service_fee,
                 estimated_delivery_minutes=eta,
+                pickup_available=True,
+                pickup_fee=0.0,
+                pickup_service_fee=0.0,
+                estimated_pickup_minutes=pickup_eta,
                 rating=rating,
                 rating_count=rating_count,
                 promo_text=promo,

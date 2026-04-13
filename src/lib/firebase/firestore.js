@@ -8,6 +8,7 @@ import {
 import { db } from './client.js'
 
 export async function getPopularSearches(limitCount = 8) {
+  if (!db) return []
   try {
     const q = query(
       collection(db, 'popular_searches'),

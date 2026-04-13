@@ -1,27 +1,29 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { SlidersHorizontal, SearchX } from 'lucide-react'
+import { SlidersHorizontal, SearchX, Bike, Car } from 'lucide-react'
 import SearchBar from '../components/SearchBar.jsx'
 import RestaurantResult from '../components/RestaurantResult.jsx'
 import ErrorBanner from '../components/ErrorBanner.jsx'
 import { SkeletonResults } from '../components/LoadingSpinner.jsx'
 import { useSearchContext } from '../context/SearchContext.jsx'
 import { useSearch } from '../hooks/useSearch.js'
+import { cn } from '../lib/utils.js'
 
 export default function Results() {
   const [searchParams] = useSearchParams()
   const urlQuery = searchParams.get('q') || ''
   const urlLocation = searchParams.get('location') || ''
+  const urlMode = searchParams.get('mode') || 'delivery'
 
-  const { results, loading, error } = useSearchContext()
-  const { search, setQuery, setLocation } = useSearch()
+  const { results, loading, error, mode } = useSearchContext()
+  const { search, setQuery, setLocation, setMode } = useSearch()
 
-  // Sync URL params into context and trigger search when URL changes
   useEffect(() => {
     if (!urlQuery || !urlLocation) return
     setQuery(urlQuery)
     setLocation(urlLocation)
-    search(urlQuery, urlLocation)
+    if (urlMode) setMode(urlMode)
+    search(urlQuery, urlLocation, urlMode)
   }, [urlQuery, urlLocation]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -40,9 +42,18 @@ export default function Results() {
                 ? `${results.length} result${results.length !== 1 ? 's' : ''} for "${urlQuery}"`
                 : 'No results found'}
             </h1>
-            {urlLocation && (
-              <p className="text-sm text-gray-400 mt-0.5">{urlLocation}</p>
-            )}
+            <div className="flex items-center gap-3 mt-1">
+              {urlLocation && (
+                <p className="text-sm text-gray-400">{urlLocation}</p>
+              )}
+              <span className={cn(
+                'inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full',
+                mode === 'pickup' ? 'bg-violet-50 text-violet-600' : 'bg-orange-50 text-orange-600',
+              )}>
+                {mode === 'pickup' ? <Car className="w-3 h-3" /> : <Bike className="w-3 h-3" />}
+                {mode === 'pickup' ? 'Pickup' : 'Delivery'}
+              </span>
+            </div>
           </div>
           {results.length > 1 && (
             <div className="flex items-center gap-1.5 text-sm text-gray-400">
@@ -84,7 +95,6 @@ export default function Results() {
             <RestaurantResult key={result.restaurant_name} result={result} />
           ))}
 
-          {/* Footer note */}
           <p className="text-center text-xs text-gray-400 pt-4 pb-2">
             Prices, fees, and availability may vary. Always confirm the final total on each platform before ordering.
           </p>

@@ -3,7 +3,7 @@ import { cn } from '../lib/utils.js'
 const PLATFORM_CONFIG = {
   uber_eats: {
     label: 'Uber Eats',
-    bg: 'bg-black',
+    bg: 'bg-gray-900',
     text: 'text-white',
     dot: 'bg-green-400',
   },
@@ -32,10 +32,10 @@ export default function PlatformBadge({ platform, size = 'sm' }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full font-medium',
+        'inline-flex items-center gap-1.5 rounded-full font-semibold',
         config.bg,
         config.text,
-        size === 'sm' ? 'px-2.5 py-0.5 text-xs' : 'px-3 py-1 text-sm',
+        size === 'sm' ? 'px-2.5 py-0.5 text-[10px]' : 'px-3 py-1 text-xs',
       )}
     >
       <span className={cn('rounded-full', config.dot, size === 'sm' ? 'w-1.5 h-1.5' : 'w-2 h-2')} />

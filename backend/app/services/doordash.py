@@ -68,7 +68,66 @@ def _extract_rsc_stores(html: str) -> list[dict]:
     stores = []
     seen_ids: set = set()
 
-    for m in re.finditer(r'"store_id":"(\d+)"', full_text):
+    # Try primary pattern first
+    store_id_matches = list(re.finditer(r'"store_id":"(\d+)"', full_text))
+    logger.info(f"[DoorDash] store_id matches: {len(store_id_matches)}")
+
+    # Diagnostic: log some identifiable patterns to understand the RSC format
+    if not store_id_matches:
+        for diag_pat, diag_name in [
+            (r'"store_name"', "store_name_field"),
+            (r'"storeName"', "storeName_field"),
+            (r'store_id', "store_id_text"),
+            (r'storeId', "storeId_text"),
+            (r'"delivery_fee"', "delivery_fee_field"),
+            (r'"__typename":"Store"', "typename_Store"),
+            (r'"__typename":"SearchResult', "typename_SearchResult"),
+            (r'Taco Bell|McDonald|Pizza', "known_brands"),
+        ]:
+            count = len(re.findall(diag_pat, full_text[:200000]))
+            if count > 0:
+                logger.info(f"[DoorDash] diag: {diag_name}={count}")
+
+    # If no store_id found, try alternate patterns used in some regions
+    if not store_id_matches:
+        # DoorDash sometimes uses numeric id fields or "storeId"
+        alt_patterns = [
+            (r'"storeId":"(\d+)"', "storeId"),
+            (r'"storeId":(\d+)', "storeId_num"),
+            (r'"id":"(\d+)","name":"([^"]+)".*?"store_name"', "id_with_store_name"),
+        ]
+        for alt_pat, alt_name in alt_patterns:
+            alt_matches = re.findall(alt_pat, full_text[:50000])
+            if alt_matches:
+                logger.info(f"[DoorDash] Found {len(alt_matches)} matches via {alt_name}")
+                break
+
+        # Try extracting stores from StoreCard or SearchResultStore patterns
+        store_card_matches = re.findall(
+            r'"__typename":"(?:Store|StoreSearchResult|SearchResultStore)"[^}]*?"id":"(\d+)"[^}]*?"name":"([^"]+)"',
+            full_text,
+        )
+        if store_card_matches:
+            logger.info(f"[DoorDash] Found {len(store_card_matches)} StoreCard matches")
+            for store_id, store_name in store_card_matches:
+                if store_id in seen_ids:
+                    continue
+                seen_ids.add(store_id)
+                stores.append({
+                    "store_id": store_id,
+                    "store_name": store_name,
+                    "star_rating": None,
+                    "num_ratings": None,
+                    "store_display_asap_time": None,
+                    "store_distance_in_miles": None,
+                    "delivery_fee": 0.0,
+                    "service_fee": 0.0,
+                    "promo_text": None,
+                })
+            if stores:
+                return stores
+
+    for m in store_id_matches or re.finditer(r'"store_id":"(\d+)"', full_text):
         store_id = m.group(1)
         if store_id in seen_ids:
             continue

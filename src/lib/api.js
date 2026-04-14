@@ -9,7 +9,7 @@ class ApiError extends Error {
 }
 
 async function fetchWithRetry(url, options = {}) {
-  const { retries = 2, retryDelay = 800, timeout = 15000, ...fetchOpts } = options
+  const { retries = 2, retryDelay = 800, timeout = 30000, ...fetchOpts } = options
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController()

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ChevronRight, ChevronDown, Trophy, UtensilsCrossed, Bike, Car, Star, Menu } from 'lucide-react'
+import { ChevronRight, ChevronDown, Trophy, UtensilsCrossed, Bike, Car, Star, Menu, ExternalLink } from 'lucide-react'
 import { rankByBestDeal, computeCost, getSavings, getMenuSavings, computeTotalCost, computePickupCost } from '../utils/sorting.js'
 import { formatPrice, formatETA, slugify } from '../lib/utils.js'
 import PlatformBadge from './PlatformBadge.jsx'
@@ -127,6 +127,17 @@ export default function RestaurantResult({ result }) {
                     ? `${formatETA(p.estimated_pickup_minutes)} pickup`
                     : `${formatETA(p.estimated_delivery_minutes)} delivery`}
                 </div>
+
+                {p.restaurant_url && (
+                  <a
+                    href={p.restaurant_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-1 mt-2 py-1.5 rounded-lg text-[10px] font-semibold text-gray-500 hover:text-orange-600 hover:bg-orange-50 transition-all duration-200"
+                  >
+                    Order <ExternalLink className="w-2.5 h-2.5" />
+                  </a>
+                )}
               </div>
             )
           })}

@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { SlidersHorizontal, SearchX, Bike, Car } from 'lucide-react'
+import { SlidersHorizontal, SearchX, Bike, Car, CheckCircle2, XCircle } from 'lucide-react'
 import SearchBar from '../components/SearchBar.jsx'
 import RestaurantResult from '../components/RestaurantResult.jsx'
 import ErrorBanner from '../components/ErrorBanner.jsx'
@@ -26,6 +26,25 @@ export default function Results() {
     search(urlQuery, urlLocation, urlMode)
   }, [urlQuery, urlLocation]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const platformStats = useMemo(() => {
+    if (!results.length) return null
+    const counts = { uber_eats: 0, doordash: 0, grubhub: 0 }
+    for (const r of results) {
+      for (const p of r.platforms) {
+        if (counts[p.platform] !== undefined) counts[p.platform]++
+      }
+    }
+    const multi = results.filter((r) => r.platforms.length > 1).length
+    return { counts, multi }
+  }, [results])
+
+  const platformLabels = { uber_eats: 'Uber Eats', doordash: 'DoorDash', grubhub: 'Grubhub' }
+  const platformColors = {
+    uber_eats: { active: 'text-gray-900', bg: 'bg-gray-100' },
+    doordash: { active: 'text-red-600', bg: 'bg-red-50' },
+    grubhub: { active: 'text-orange-600', bg: 'bg-orange-50' },
+  }
+
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
       {/* Search bar */}
@@ -35,30 +54,63 @@ export default function Results() {
 
       {/* Results header */}
       {!loading && (results.length > 0 || error) && (
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <h1 className="font-bold text-xl text-gray-900">
-              {results.length > 0
-                ? `${results.length} result${results.length !== 1 ? 's' : ''} for "${urlQuery}"`
-                : 'No results found'}
-            </h1>
-            <div className="flex items-center gap-3 mt-1">
-              {urlLocation && (
-                <p className="text-sm text-gray-400">{urlLocation}</p>
-              )}
-              <span className={cn(
-                'inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full',
-                mode === 'pickup' ? 'bg-violet-50 text-violet-600' : 'bg-orange-50 text-orange-600',
-              )}>
-                {mode === 'pickup' ? <Car className="w-3 h-3" /> : <Bike className="w-3 h-3" />}
-                {mode === 'pickup' ? 'Pickup' : 'Delivery'}
-              </span>
+        <div className="mb-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="font-bold text-xl text-gray-900">
+                {results.length > 0
+                  ? `${results.length} result${results.length !== 1 ? 's' : ''} for "${urlQuery}"`
+                  : 'No results found'}
+              </h1>
+              <div className="flex items-center gap-3 mt-1">
+                {urlLocation && (
+                  <p className="text-sm text-gray-400">{urlLocation}</p>
+                )}
+                <span className={cn(
+                  'inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full',
+                  mode === 'pickup' ? 'bg-violet-50 text-violet-600' : 'bg-orange-50 text-orange-600',
+                )}>
+                  {mode === 'pickup' ? <Car className="w-3 h-3" /> : <Bike className="w-3 h-3" />}
+                  {mode === 'pickup' ? 'Pickup' : 'Delivery'}
+                </span>
+              </div>
             </div>
+            {results.length > 1 && (
+              <div className="flex items-center gap-1.5 text-sm text-gray-400">
+                <SlidersHorizontal className="w-4 h-4" />
+                Sorted by best deal
+              </div>
+            )}
           </div>
-          {results.length > 1 && (
-            <div className="flex items-center gap-1.5 text-sm text-gray-400">
-              <SlidersHorizontal className="w-4 h-4" />
-              Sorted by best deal
+
+          {/* Platform coverage summary */}
+          {platformStats && (
+            <div className="flex flex-wrap items-center gap-2 mt-3">
+              {Object.entries(platformStats.counts).map(([platform, count]) => {
+                const colors = platformColors[platform]
+                return (
+                  <span
+                    key={platform}
+                    className={cn(
+                      'inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full',
+                      count > 0 ? colors.bg : 'bg-gray-50',
+                      count > 0 ? colors.active : 'text-gray-400',
+                    )}
+                  >
+                    {count > 0 ? (
+                      <CheckCircle2 className="w-3 h-3" />
+                    ) : (
+                      <XCircle className="w-3 h-3" />
+                    )}
+                    {platformLabels[platform]} ({count})
+                  </span>
+                )
+              })}
+              {platformStats.multi > 0 && (
+                <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
+                  {platformStats.multi} cross-platform match{platformStats.multi !== 1 ? 'es' : ''}
+                </span>
+              )}
             </div>
           )}
         </div>

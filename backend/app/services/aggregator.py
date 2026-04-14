@@ -29,9 +29,34 @@ def _compute_pickup_cost(p: PlatformResult) -> float:
     return p.pickup_fee + p.pickup_service_fee
 
 
+_NON_RESTAURANT_KEYWORDS = {
+    "7-eleven", "711", "pet", "petsmart", "petco", "cvs", "walgreens",
+    "speedway", "circle k", "chevron", "safeway", "grocery outlet",
+    "smart & final", "costco", "dollar tree", "dollar general",
+    "foodsco", "restaurant depot", "chef'store", "chefstore",
+    "pet food express", "home depot", "lowes", "target",
+    "lowe's", "rebel convenience", "cumberland farms", "sprouts farmers",
+    "jetro cash", "price choice", "portofino wine",
+}
+
+
+def _is_likely_non_restaurant(name: str) -> bool:
+    """Filter out convenience stores, pet shops, etc. from results."""
+    lower = name.lower()
+    return any(kw in lower for kw in _NON_RESTAURANT_KEYWORDS)
+
+
 def _normalize_name(name: str) -> str:
-    """Lowercase and strip common suffixes for better fuzzy matching."""
+    """Lowercase and strip common suffixes for better fuzzy matching.
+
+    Strips parenthetical location suffixes like '(45 Catherine St)' and
+    dash-separated location tags like '- Tribeca' that platforms add.
+    """
     name = name.lower().strip()
+    # Strip parenthetical address/location suffixes: "(45 Catherine St)", "(Downtown)"
+    name = re.sub(r"\s*\([^)]*(?:st|ave|blvd|rd|dr|way|ln|ct|pl|pkwy|hwy|\d{3,})[^)]*\)$", "", name, flags=re.IGNORECASE)
+    # Strip trailing dash-location: "- Tribeca", "- Downtown", "- Hudson Yards"
+    name = re.sub(r"\s*-\s*(?:downtown|midtown|uptown|soho|tribeca|fidi|chelsea|harlem|williamsburg|brooklyn|queens|bronx|astoria|bushwick|les|uws|ues|hudson yards|east village|west village|murray hill|flatiron|gramercy|hell'?s kitchen|nolita|noho|dumbo|cobble hill|park slope|prospect heights|crown heights|bed-stuy|greenpoint|sunset park|bay ridge|jackson heights|long island city|times square|union square|financial district|lower east side|upper west side|upper east side)\s*$", "", name, flags=re.IGNORECASE)
     for suffix in [
         r"\s*-\s*delivery$", r"\s*\(delivery\)$", r"\s*restaurant$",
         r"\s*grill$", r"\s*kitchen$", r"\s*express$",
@@ -56,7 +81,11 @@ def _normalize_menu_item_name(name: str) -> str:
 
 
 def _fuzzy_group(all_results: list[PlatformResult]) -> dict[str, list[PlatformResult]]:
-    """Group PlatformResults by restaurant name using fuzzy matching."""
+    """Group PlatformResults by restaurant name using fuzzy matching.
+
+    Only merges results from *different* platforms. If a group already contains
+    a result from the same platform, treat the new result as a separate restaurant.
+    """
     groups: dict[str, list[PlatformResult]] = {}
     group_keys: list[str] = []
 
@@ -67,6 +96,10 @@ def _fuzzy_group(all_results: list[PlatformResult]) -> dict[str, list[PlatformRe
         for key in group_keys:
             score = fuzz.token_sort_ratio(norm, key)
             if score >= FUZZY_THRESHOLD:
+                # Don't merge if group already has a result from this platform
+                existing_platforms = {r.platform for r in groups[key]}
+                if result.platform in existing_platforms:
+                    continue
                 matched_key = key
                 break
 
@@ -233,7 +266,7 @@ class AggregatorService:
         }
 
     async def search(
-        self, query: str, location: str, timeout: float = 8.0
+        self, query: str, location: str, timeout: float = 20.0
     ) -> list[AggregatedResult]:
         """Fan out to all scrapers concurrently, merge results, rank by best deal."""
         tasks = {
@@ -254,7 +287,10 @@ class AggregatorService:
                 logger.warning(f"[Aggregator] {platform.value} failed: {e}")
                 results_by_platform[platform] = []
 
-        all_results = [r for results in results_by_platform.values() for r in results]
+        all_results = [
+            r for results in results_by_platform.values() for r in results
+            if not _is_likely_non_restaurant(r.restaurant_name)
+        ]
 
         if not all_results:
             return []

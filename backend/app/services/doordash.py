@@ -413,50 +413,62 @@ def _parse_eta(eta_str: Optional[str]) -> int:
     return int(m.group(1)) if m else 30
 
 
-def _cffi_get(url: str, cookies: str = "", timeout: int = 15) -> Optional[str]:
+def _cffi_get(url: str, cookies: str = "", timeout: int = 15, retries: int = 2) -> Optional[str]:
     """Fetch a URL using curl_cffi with Chrome TLS impersonation (sync).
 
     DoorDash uses Cloudflare which blocks datacenter IPs even with correct TLS
     fingerprints. This works from residential IPs but may get challenged from
-    cloud servers.
+    cloud servers. Retries with different browser impersonation on failure.
     """
-    try:
-        headers = {
-            "Referer": "https://www.doordash.com/",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        if cookies:
-            headers["Cookie"] = cookies
-        resp = cffi_requests.get(
-            url,
-            impersonate="chrome",
-            headers=headers,
-            timeout=timeout,
-            allow_redirects=True,
-        )
-        if resp.status_code != 200:
-            logger.warning(f"[DoorDash] curl_cffi returned {resp.status_code} for {url[:80]}")
-            return None
-        html = resp.text
+    browsers = ["chrome", "chrome110", "chrome120"]
+    attempts = min(retries + 1, len(browsers))
 
-        # Detect Cloudflare challenge/waiting room
-        if "waitingroom" in html.lower() or (
-            "challenge" in html.lower() and len(html) < 50000
-        ):
-            logger.warning("[DoorDash] Got Cloudflare challenge page (datacenter IP blocked)")
-            return None
+    for attempt in range(attempts):
+        browser = browsers[attempt % len(browsers)]
+        try:
+            headers = {
+                "Referer": "https://www.doordash.com/",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            }
+            if cookies:
+                headers["Cookie"] = cookies
+            resp = cffi_requests.get(
+                url,
+                impersonate=browser,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=True,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"[DoorDash] curl_cffi ({browser}) returned {resp.status_code} for {url[:80]}")
+                continue
+            html = resp.text
 
-        # Check if we got actual page content (RSC data)
-        if "store_id" not in html and "store_name" not in html and "__next_f.push" in html:
-            # Got RSC shell but no store data
-            logger.warning("[DoorDash] Got empty RSC shell (no store data)")
-            return None
+            # Detect Cloudflare challenge/waiting room
+            if "waitingroom" in html.lower() or (
+                "challenge" in html.lower() and len(html) < 50000
+            ):
+                logger.warning(f"[DoorDash] Cloudflare challenge ({browser}), attempt {attempt + 1}/{attempts}")
+                if attempt < attempts - 1:
+                    import time as _time
+                    _time.sleep(1)
+                continue
 
-        logger.info(f"[DoorDash] curl_cffi got {len(html)} bytes for {url[:60]}")
-        return html
-    except Exception as e:
-        logger.warning(f"[DoorDash] curl_cffi request failed: {e}")
-        return None
+            # Check if we got actual page content (RSC data)
+            if "store_id" not in html and "store_name" not in html and "__next_f.push" in html:
+                logger.warning(f"[DoorDash] Empty RSC shell ({browser}), attempt {attempt + 1}/{attempts}")
+                if attempt < attempts - 1:
+                    continue
+                return None
+
+            logger.info(f"[DoorDash] curl_cffi ({browser}) got {len(html)} bytes for {url[:60]}")
+            return html
+        except Exception as e:
+            logger.warning(f"[DoorDash] curl_cffi ({browser}) request failed: {e}")
+            continue
+
+    return None
 
 
 class DoorDashScraper(BaseScraper):

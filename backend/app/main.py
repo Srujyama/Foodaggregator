@@ -1,5 +1,6 @@
 import logging
 import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -52,6 +53,35 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+# Simple in-memory rate limiter (per IP, 30 requests per minute)
+_rate_limit: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT_WINDOW = 60.0
+RATE_LIMIT_MAX = 30
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if request.url.path in ("/health", "/docs", "/openapi.json"):
+        return await call_next(request)
+
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+
+    # Clean old entries
+    _rate_limit[client_ip] = [t for t in _rate_limit[client_ip] if now - t < RATE_LIMIT_WINDOW]
+
+    if len(_rate_limit[client_ip]) >= RATE_LIMIT_MAX:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many requests. Please try again later."},
+            headers={"Retry-After": "60"},
+        )
+
+    _rate_limit[client_ip].append(now)
+    return await call_next(request)
+
 
 # Routers
 app.include_router(search.router, prefix="/api", tags=["search"])

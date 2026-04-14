@@ -1,11 +1,31 @@
+import { useState, useEffect } from 'react'
 import { Loader2 } from 'lucide-react'
 import { cn } from '../lib/utils.js'
 
+const LOADING_MESSAGES = [
+  'Searching Uber Eats...',
+  'Checking DoorDash...',
+  'Scanning Grubhub...',
+  'Comparing delivery fees...',
+  'Finding the best deals...',
+  'Loading menus...',
+  'Almost there...',
+]
+
 export default function LoadingSpinner({ className }) {
+  const [msgIndex, setMsgIndex] = useState(0)
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setMsgIndex((i) => (i + 1) % LOADING_MESSAGES.length)
+    }, 2200)
+    return () => clearInterval(interval)
+  }, [])
+
   return (
     <div className={cn('flex flex-col items-center justify-center py-20 gap-4', className)}>
       <Loader2 className="w-8 h-8 text-orange-500 animate-spin" />
-      <p className="text-sm text-gray-400 animate-pulse">Fetching prices from all platforms...</p>
+      <p className="text-sm text-gray-400 animate-pulse">{LOADING_MESSAGES[msgIndex]}</p>
     </div>
   )
 }

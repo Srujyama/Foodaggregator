@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, Zap, DollarSign, Clock, ArrowRight, ShieldCheck, Car } from 'lucide-react'
+import { TrendingUp, Zap, DollarSign, Clock, ArrowRight, ShieldCheck, Car, Tag, ExternalLink } from 'lucide-react'
 import SearchBar from '../components/SearchBar.jsx'
 import { getPopularSearches } from '../lib/firebase/firestore.js'
+import { getDeals } from '../lib/api.js'
 import { useSearch } from '../hooks/useSearch.js'
+import { formatPrice, formatETA } from '../lib/utils.js'
+import PlatformBadge from '../components/PlatformBadge.jsx'
 
 const POPULAR_FALLBACK = [
   { id: '1', term: 'Pizza', location: '' },
@@ -74,12 +77,25 @@ const PLATFORM_LOGOS = [
 
 export default function Home() {
   const [popular, setPopular] = useState(POPULAR_FALLBACK)
+  const [deals, setDeals] = useState([])
+  const [dealsLocation, setDealsLocation] = useState('')
   const { search, setQuery } = useSearch()
 
   useEffect(() => {
     getPopularSearches(8).then((data) => {
       if (data.length > 0) setPopular(data)
     })
+
+    // Fetch deals for a default location (NYC) to populate the landing page
+    const defaultLocation = 'New York, NY'
+    getDeals(defaultLocation, 4)
+      .then((data) => {
+        if (data.results?.length > 0) {
+          setDeals(data.results)
+          setDealsLocation(defaultLocation)
+        }
+      })
+      .catch(() => {})
   }, [])
 
   const handlePopularClick = (term) => {
@@ -199,6 +215,68 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      {/* Today's Best Deals */}
+      {deals.length > 0 && (
+        <section className="w-full py-20 px-4 bg-gray-50">
+          <div className="max-w-5xl mx-auto">
+            <div className="text-center mb-10">
+              <div className="inline-flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-full px-4 py-1.5 mb-4">
+                <Tag className="w-4 h-4 text-emerald-600" />
+                <span className="text-emerald-700 text-sm font-medium">Live deals</span>
+              </div>
+              <h2 className="text-3xl font-bold text-gray-900 mb-3">
+                Today's Best Deals
+              </h2>
+              <p className="text-gray-500">
+                Free delivery and promos happening right now near {dealsLocation}
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {deals.map((deal) => {
+                const bestPlatform = deal.platforms?.[0]
+                const promo = deal.platforms?.find((p) => p.promo_text)?.promo_text
+                return (
+                  <div
+                    key={deal.restaurant_name}
+                    className="bg-white rounded-2xl border border-gray-200 p-5 hover:shadow-lg hover:border-orange-200 transition-all duration-300"
+                  >
+                    <h3 className="font-bold text-gray-900 text-sm mb-2 truncate">
+                      {deal.restaurant_name}
+                    </h3>
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {deal.platforms?.map((p) => (
+                        <PlatformBadge key={p.platform} platform={p.platform} />
+                      ))}
+                    </div>
+                    {promo && (
+                      <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 mb-3 font-medium">
+                        {promo}
+                      </p>
+                    )}
+                    <div className="flex items-center justify-between text-xs text-gray-500">
+                      <span>
+                        Delivery: <span className="font-semibold text-emerald-600">{formatPrice(bestPlatform?.delivery_fee ?? 0)}</span>
+                      </span>
+                      <span>{formatETA(bestPlatform?.estimated_delivery_minutes)} </span>
+                    </div>
+                    {bestPlatform?.restaurant_url && (
+                      <a
+                        href={bestPlatform.restaurant_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-1.5 w-full mt-3 py-2 rounded-xl bg-orange-50 border border-orange-200 text-xs font-semibold text-orange-600 hover:bg-orange-100 transition-all duration-200"
+                      >
+                        Order Now <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* CTA */}
       <section className="w-full py-20 px-4 bg-gray-50">

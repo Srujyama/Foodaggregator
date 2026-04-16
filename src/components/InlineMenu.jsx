@@ -9,6 +9,11 @@ const PLATFORM_LABELS = {
   uber_eats: 'Uber Eats',
   doordash: 'DoorDash',
   grubhub: 'Grubhub',
+  postmates: 'Postmates',
+  seamless: 'Seamless',
+  caviar: 'Caviar',
+  gopuff: 'gopuff',
+  eatstreet: 'EatStreet',
 }
 
 export default function InlineMenu({ restaurantName, location, platforms }) {

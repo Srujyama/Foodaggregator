@@ -28,7 +28,7 @@ export default function Results() {
 
   const platformStats = useMemo(() => {
     if (!results.length) return null
-    const counts = { uber_eats: 0, doordash: 0, grubhub: 0 }
+    const counts = { uber_eats: 0, doordash: 0, grubhub: 0, postmates: 0, seamless: 0, caviar: 0, gopuff: 0, eatstreet: 0 }
     for (const r of results) {
       for (const p of r.platforms) {
         if (counts[p.platform] !== undefined) counts[p.platform]++
@@ -38,11 +38,20 @@ export default function Results() {
     return { counts, multi }
   }, [results])
 
-  const platformLabels = { uber_eats: 'Uber Eats', doordash: 'DoorDash', grubhub: 'Grubhub' }
+  const platformLabels = {
+    uber_eats: 'Uber Eats', doordash: 'DoorDash', grubhub: 'Grubhub',
+    postmates: 'Postmates', seamless: 'Seamless', caviar: 'Caviar',
+    gopuff: 'gopuff', eatstreet: 'EatStreet',
+  }
   const platformColors = {
     uber_eats: { active: 'text-gray-900', bg: 'bg-gray-100' },
     doordash: { active: 'text-red-600', bg: 'bg-red-50' },
     grubhub: { active: 'text-orange-600', bg: 'bg-orange-50' },
+    postmates: { active: 'text-gray-800', bg: 'bg-yellow-50' },
+    seamless: { active: 'text-blue-600', bg: 'bg-blue-50' },
+    caviar: { active: 'text-purple-700', bg: 'bg-purple-50' },
+    gopuff: { active: 'text-sky-600', bg: 'bg-sky-50' },
+    eatstreet: { active: 'text-teal-600', bg: 'bg-teal-50' },
   }
 
   return (

@@ -119,6 +119,11 @@ const PLATFORM_LABELS = {
   uber_eats: 'Uber Eats',
   doordash: 'DoorDash',
   grubhub: 'Grubhub',
+  postmates: 'Postmates',
+  seamless: 'Seamless',
+  caviar: 'Caviar',
+  gopuff: 'gopuff',
+  eatstreet: 'EatStreet',
 }
 
 function FeeRow({ label, value, highlight = false }) {

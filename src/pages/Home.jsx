@@ -38,7 +38,7 @@ const FEATURES = [
   {
     icon: Zap,
     title: 'Instant Results',
-    desc: 'Real-time data from Uber Eats, DoorDash, and Grubhub in one search.',
+    desc: 'Real-time data from 8 delivery platforms including Uber Eats, DoorDash, Grubhub, and more.',
     color: 'text-blue-600',
     bg: 'bg-blue-50',
     border: 'border-blue-100',
@@ -73,6 +73,11 @@ const PLATFORM_LOGOS = [
   { name: 'Uber Eats', bg: 'bg-gray-900', text: 'text-white' },
   { name: 'DoorDash', bg: 'bg-red-600', text: 'text-white' },
   { name: 'Grubhub', bg: 'bg-orange-500', text: 'text-white' },
+  { name: 'Postmates', bg: 'bg-gray-800', text: 'text-white' },
+  { name: 'Seamless', bg: 'bg-blue-600', text: 'text-white' },
+  { name: 'Caviar', bg: 'bg-purple-700', text: 'text-white' },
+  { name: 'gopuff', bg: 'bg-sky-500', text: 'text-white' },
+  { name: 'EatStreet', bg: 'bg-teal-600', text: 'text-white' },
 ]
 
 export default function Home() {
@@ -125,7 +130,7 @@ export default function Home() {
             <span className="text-yellow-300">on Food Delivery</span>
           </h1>
           <p className="text-orange-100 text-lg sm:text-xl mb-10 max-w-xl mx-auto leading-relaxed">
-            Compare prices across Uber Eats, DoorDash, and Grubhub in one search. Delivery or pickup -- we show you every option.
+            Compare prices across Uber Eats, DoorDash, Grubhub, Postmates, Seamless, Caviar, gopuff, and EatStreet in one search.
           </p>
 
           <SearchBar large />
@@ -198,7 +203,7 @@ export default function Home() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             {[
               { step: '1', title: 'Search', desc: 'Type a restaurant name, cuisine, or dish and your location.' },
-              { step: '2', title: 'Compare', desc: 'See delivery fees, service fees, ETAs, and menu prices from all 3 platforms.' },
+              { step: '2', title: 'Compare', desc: 'See delivery fees, service fees, ETAs, and menu prices from all 8 platforms.' },
               { step: '3', title: 'Order', desc: 'Click through to the cheapest platform and place your order directly.' },
             ].map((item, i) => (
               <div key={item.step} className="text-center relative">
@@ -290,7 +295,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="w-full bg-white border-t border-gray-100 py-8 px-4">
         <div className="max-w-4xl mx-auto text-center text-sm text-gray-400">
-          <p>FoodFinder compares prices from Uber Eats, DoorDash, and Grubhub. We are not affiliated with any of these platforms.</p>
+          <p>FoodFinder compares prices from Uber Eats, DoorDash, Grubhub, Postmates, Seamless, Caviar, gopuff, and EatStreet. We are not affiliated with any of these platforms.</p>
           <p className="mt-2">Prices, fees, and availability may vary. Always confirm the final total before ordering.</p>
         </div>
       </footer>

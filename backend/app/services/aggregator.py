@@ -11,8 +11,13 @@ from app.models.food import (
     Platform,
     PlatformResult,
 )
+from app.services.caviar import CaviarScraper
 from app.services.doordash import DoorDashScraper
+from app.services.eatstreet import EatStreetScraper
+from app.services.gopuff import GopuffScraper
 from app.services.grubhub import GrubhubScraper
+from app.services.postmates import PostmatesScraper
+from app.services.seamless import SeamlessScraper
 from app.services.ubereats import UberEatsScraper
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,9 @@ _NON_RESTAURANT_KEYWORDS = {
     "pet food express", "home depot", "lowes", "target",
     "lowe's", "rebel convenience", "cumberland farms", "sprouts farmers",
     "jetro cash", "price choice", "portofino wine",
+    "rite aid", "duane reade", "wawa", "sheetz", "autozone",
+    "ace hardware", "family dollar", "five below", "michaels",
+    "bed bath", "staples", "office depot", "best buy",
 }
 
 
@@ -263,6 +271,11 @@ class AggregatorService:
             Platform.UBER_EATS: UberEatsScraper(),
             Platform.DOORDASH: DoorDashScraper(),
             Platform.GRUBHUB: GrubhubScraper(),
+            Platform.POSTMATES: PostmatesScraper(),
+            Platform.SEAMLESS: SeamlessScraper(),
+            Platform.CAVIAR: CaviarScraper(),
+            Platform.GOPUFF: GopuffScraper(),
+            Platform.EATSTREET: EatStreetScraper(),
         }
 
     async def search(

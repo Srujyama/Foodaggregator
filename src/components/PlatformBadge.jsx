@@ -19,6 +19,36 @@ const PLATFORM_CONFIG = {
     text: 'text-white',
     dot: 'bg-orange-200',
   },
+  postmates: {
+    label: 'Postmates',
+    bg: 'bg-gray-800',
+    text: 'text-white',
+    dot: 'bg-yellow-400',
+  },
+  seamless: {
+    label: 'Seamless',
+    bg: 'bg-blue-600',
+    text: 'text-white',
+    dot: 'bg-blue-300',
+  },
+  caviar: {
+    label: 'Caviar',
+    bg: 'bg-purple-700',
+    text: 'text-white',
+    dot: 'bg-purple-300',
+  },
+  gopuff: {
+    label: 'gopuff',
+    bg: 'bg-sky-500',
+    text: 'text-white',
+    dot: 'bg-sky-200',
+  },
+  eatstreet: {
+    label: 'EatStreet',
+    bg: 'bg-teal-600',
+    text: 'text-white',
+    dot: 'bg-teal-300',
+  },
 }
 
 export default function PlatformBadge({ platform, size = 'sm' }) {

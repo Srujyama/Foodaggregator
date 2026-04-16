@@ -7,6 +7,11 @@ class Platform(str, Enum):
     UBER_EATS = "uber_eats"
     DOORDASH = "doordash"
     GRUBHUB = "grubhub"
+    POSTMATES = "postmates"
+    SEAMLESS = "seamless"
+    CAVIAR = "caviar"
+    GOPUFF = "gopuff"
+    EATSTREET = "eatstreet"
 
 
 class MenuItem(BaseModel):

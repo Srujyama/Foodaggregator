@@ -1,11 +1,14 @@
 """
 Seamless scraper - April 2026.
 
-Seamless (seamless.com) is owned by Grubhub and shares the same backend API,
-but operates as a separate brand primarily in NYC. It can have different
-promotions, restaurant availability, and pricing from Grubhub.
-
-Uses the same api-gtm.grubhub.com endpoints but with Seamless branding headers.
+Seamless (seamless.com) is owned by Grubhub and shares the same backend API.
+As of April 2026 the grubhub.com client_id is rejected when the Origin header
+is seamless.com, and Seamless's own client_id is not easily recoverable from
+their minified JS bundle. Result: anonymous-session auth yields 401 and the
+web-scrape fallback returns []. Seamless is disabled by default (gated on
+ENABLE_SECONDARY_PLATFORMS) in app.services.aggregator. It also wraps the
+same restaurant inventory as Grubhub, so even when working it mostly duplicates
+Grubhub groupings without adding coverage.
 """
 
 import json
@@ -29,7 +32,11 @@ logger = logging.getLogger(__name__)
 SL_SEARCH_API = "https://api-gtm.grubhub.com/restaurants/search/search_listing"
 SL_RESTAURANT_API = "https://api-gtm.grubhub.com/restaurants/{restaurant_id}"
 SL_AUTH_URL = "https://api-gtm.grubhub.com/auth"
+SL_ANON_AUTH_URL = "https://api-gtm.grubhub.com/auth/anon"
 SL_WEB_SEARCH = "https://www.seamless.com/search"
+
+# Known Seamless/Grubhub web client_id (April 2026).
+SL_DEFAULT_CLIENT_ID = "beta_UmWlpstzQSFmocLy3h1UieYcVST"
 
 _API_HEADERS = {
     "User-Agent": (
@@ -47,7 +54,12 @@ _token_cache: tuple[str, float] = ("", 0.0)
 
 
 async def _get_token() -> str:
-    """Get a Seamless/Grubhub API token. Seamless uses the same auth endpoint."""
+    """Get a Seamless/Grubhub API token via /auth/anon.
+
+    Seamless shares Grubhub's backend and the same /auth/anon endpoint works
+    with brand=SEAMLESS. The legacy /auth endpoint only accepts refresh_token
+    grants and returns 401 for anon sessions.
+    """
     global _token_cache
     token, expires_at = _token_cache
     if token and time.time() < expires_at:
@@ -56,51 +68,30 @@ async def _get_token() -> str:
     import asyncio
 
     def _try_auth():
-        client_ids = ["beta_UmWlpsR6GHQhCpmUCk"]
-
-        # Try discovering client_id from Seamless JS bundles
+        session = cffi_requests.Session(impersonate="chrome")
         try:
-            session = cffi_requests.Session(impersonate="chrome")
-            resp = session.get("https://www.seamless.com/", timeout=10)
-            js_urls = re.findall(
-                r'(https://assets\.grubhub\.com/assets/[^\s"\']+\.js)', resp.text
-            )
-            for url in js_urls[:8]:
-                try:
-                    jresp = session.get(url, timeout=8)
-                    if jresp.status_code == 200:
-                        matches = re.findall(r'client_id["\s:]+["\']([A-Za-z0-9_]+)["\']', jresp.text)
-                        for m in matches:
-                            if len(m) > 8 and m != "undefined" and m not in client_ids:
-                                client_ids.insert(0, m)
-                                break
-                except Exception:
-                    continue
+            session.get("https://www.seamless.com/", timeout=10)
         except Exception:
             pass
 
-        for cid in client_ids:
-            try:
-                resp = cffi_requests.post(
-                    SL_AUTH_URL,
-                    json={
-                        "brand": "SEAMLESS",
-                        "client_id": cid,
-                        "device_id": str(_uuid.uuid4()),
-                        "refresh_token": "",
-                    },
-                    headers={**_API_HEADERS, "Content-Type": "application/json"},
-                    impersonate="chrome",
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    tk = data.get("session_handle", {}).get("access_token", "")
-                    if tk:
-                        logger.info(f"[Seamless] Got anonymous token (brand=SEAMLESS)")
-                        return tk
-            except Exception as e:
-                logger.debug(f"[Seamless] Auth failed: {e}")
+        headers = {**_API_HEADERS, "Content-Type": "application/json;charset=UTF-8"}
+        body = {
+            "brand": "SEAMLESS",
+            "client_id": SL_DEFAULT_CLIENT_ID,
+            "device_id": str(_uuid.uuid4()),
+        }
+        try:
+            resp = session.post(SL_ANON_AUTH_URL, json=body, headers=headers, timeout=12)
+            if resp.status_code == 200:
+                data = resp.json()
+                tk = data.get("session_handle", {}).get("access_token", "")
+                if tk:
+                    logger.info("[Seamless] Got anonymous token via /auth/anon")
+                    return tk
+            else:
+                logger.debug(f"[Seamless] /auth/anon returned {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.debug(f"[Seamless] /auth/anon failed: {e}")
         return ""
 
     token = await asyncio.to_thread(_try_auth)
@@ -320,7 +311,7 @@ class SeamlessScraper(BaseScraper):
             "orderMethod": "delivery",
             "locationMode": "DELIVERY",
             "facetSet": "umaNew",
-            "pageSize": 20,
+            "pageSize": 50,
             "hideHateos": "true",
             "queryText": query,
             "latitude": lat,

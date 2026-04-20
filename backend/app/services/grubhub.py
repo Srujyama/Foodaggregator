@@ -31,6 +31,11 @@ GH_SEARCH_API = "https://api-gtm.grubhub.com/restaurants/search/search_listing"
 GH_SEARCH_LEGACY = "https://api-gtm.grubhub.com/restaurants/search"
 GH_RESTAURANT_API = "https://api-gtm.grubhub.com/restaurants/{restaurant_id}"
 GH_AUTH_URL = "https://api-gtm.grubhub.com/auth"
+GH_ANON_AUTH_URL = "https://api-gtm.grubhub.com/auth/anon"
+
+# Current Grubhub web client_id (April 2026). Discovered from the main JS bundle;
+# rotates periodically, so _discover_client_id() is tried first.
+GH_DEFAULT_CLIENT_ID = "beta_UmWlpstzQSFmocLy3h1UieYcVST"
 
 _API_HEADERS = {
     "User-Agent": (
@@ -51,7 +56,12 @@ _client_id_cache: tuple[str, float] = ("", 0.0)
 
 
 async def _discover_client_id() -> str:
-    """Try to discover the current Grubhub client_id from their JS bundles."""
+    """Try to discover the current Grubhub client_id from their JS bundles.
+
+    The homepage is a thin SPA shell that preloads its JS via
+    <link rel="preload" as="script" href=".../main-<hash>.js">. The client_id
+    is embedded as a 'beta_...' token in those bundles.
+    """
     global _client_id_cache
     cid, expires_at = _client_id_cache
     if cid and time.time() < expires_at:
@@ -63,37 +73,43 @@ async def _discover_client_id() -> str:
         try:
             session = cffi_requests.Session(impersonate="chrome")
             resp = session.get("https://www.grubhub.com/", timeout=10)
+            if resp.status_code != 200:
+                return ""
             html = resp.text
 
-            # Look for JS bundles loaded by the targeting manifest
-            js_urls = re.findall(
-                r'(https://assets\.grubhub\.com/assets/[^\s"\']+\.js)', html
+            js_urls: list[str] = []
+            # Grubhub preloads its main bundle: <link rel="preload" as="script" href="...main-xxx.js">
+            for m in re.finditer(
+                r'<link[^>]+rel=["\']preload["\'][^>]+as=["\']script["\'][^>]+href=["\']([^"\']+\.js)["\']',
+                html,
+            ):
+                js_urls.append(m.group(1))
+            # Fallback: any grubhub asset JS referenced anywhere
+            js_urls.extend(
+                re.findall(
+                    r'https://assets\.grubhub\.com/[A-Za-z0-9/_\-]+\.js',
+                    html,
+                )
             )
 
-            # Also try fetching the main app chunk via manifest
-            manifest_match = re.search(
-                r'manifest["\s:]+["\'](https://[^\s"\']+\.json)["\']', html
-            )
-            if manifest_match:
-                try:
-                    mresp = session.get(manifest_match.group(1), timeout=8)
-                    mdata = mresp.json() if mresp.status_code == 200 else {}
-                    for v in mdata.values():
-                        if isinstance(v, str) and v.endswith(".js"):
-                            js_urls.append(f"https://assets.grubhub.com/assets/{v}")
-                except Exception:
-                    pass
+            # De-dupe while preserving order, prioritize 'main-' bundle
+            seen = set()
+            ordered: list[str] = []
+            for url in js_urls:
+                if url in seen:
+                    continue
+                seen.add(url)
+                ordered.append(url)
+            ordered.sort(key=lambda u: 0 if "main-" in u else 1)
 
-            for url in js_urls[:10]:
+            for url in ordered[:6]:
                 try:
-                    jresp = session.get(url, timeout=8)
-                    if jresp.status_code == 200:
-                        matches = re.findall(
-                            r'client_id["\s:]+["\']([A-Za-z0-9_]+)["\']', jresp.text
-                        )
-                        for m in matches:
-                            if len(m) > 8 and m != "undefined":
-                                return m
+                    jresp = session.get(url, timeout=10)
+                    if jresp.status_code != 200:
+                        continue
+                    # The client_id is a 'beta_'-prefixed alphanumeric token.
+                    for m in re.findall(r'["\'](beta_[A-Za-z0-9]{10,})["\']', jresp.text):
+                        return m
                 except Exception:
                     continue
         except Exception as e:
@@ -107,7 +123,13 @@ async def _discover_client_id() -> str:
 
 
 async def _get_token() -> str:
-    """Get a Grubhub API token from env or anonymous auth."""
+    """Get a Grubhub API token from env or anonymous auth.
+
+    Grubhub's anonymous-session endpoint is /auth/anon (April 2026). The legacy
+    /auth endpoint still exists but only accepts refresh_token grants now;
+    hitting it with no refresh_token yields 401 'Invalid client_id' regardless
+    of how fresh the client_id is.
+    """
     global _token_cache
     token, expires_at = _token_cache
     if token and time.time() < expires_at:
@@ -119,85 +141,95 @@ async def _get_token() -> str:
         _token_cache = (env_token, time.time() + 3600)
         return env_token
 
-    # Try to discover the current client_id and auth with curl_cffi
-    client_id = await _discover_client_id()
-    client_ids_to_try = []
-    if client_id:
-        client_ids_to_try.append(client_id)
-    client_ids_to_try.append("beta_UmWlpsR6GHQhCpmUCk")
+    # Try to discover the current client_id; fall back to the known-good default.
+    discovered = await _discover_client_id()
+    client_ids_to_try: list[str] = []
+    if discovered:
+        client_ids_to_try.append(discovered)
+    if GH_DEFAULT_CLIENT_ID not in client_ids_to_try:
+        client_ids_to_try.append(GH_DEFAULT_CLIENT_ID)
 
     import asyncio
     import uuid
 
     def _try_auth():
+        session = cffi_requests.Session(impersonate="chrome")
+        # Warm up cookies (Grubhub's edge sometimes sets bot-detection cookies here).
+        try:
+            session.get("https://www.grubhub.com/", timeout=10)
+        except Exception:
+            pass
+
+        headers = {
+            **_API_HEADERS,
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+
         for cid in client_ids_to_try:
+            body = {
+                "brand": "GRUBHUB",
+                "client_id": cid,
+                "device_id": str(uuid.uuid4()),
+            }
             try:
-                resp = cffi_requests.post(
-                    GH_AUTH_URL,
-                    json={
-                        "brand": "GRUBHUB",
-                        "client_id": cid,
-                        "device_id": str(uuid.uuid4()),
-                        "refresh_token": "",
-                    },
-                    headers={
-                        **_API_HEADERS,
-                        "Content-Type": "application/json",
-                    },
-                    impersonate="chrome",
-                    timeout=10,
-                )
+                resp = session.post(GH_ANON_AUTH_URL, json=body, headers=headers, timeout=12)
                 if resp.status_code == 200:
                     data = resp.json()
                     tk = data.get("session_handle", {}).get("access_token", "")
                     if tk:
-                        logger.info(f"[Grubhub] Got anonymous token via curl_cffi (client_id={cid[:10]}...)")
+                        logger.info(
+                            f"[Grubhub] Got anonymous token via /auth/anon (client_id={cid[:12]}...)"
+                        )
                         return tk
-                else:
-                    logger.debug(f"[Grubhub] Auth with client_id={cid[:10]}... returned {resp.status_code}")
+                logger.debug(
+                    f"[Grubhub] /auth/anon ({cid[:12]}...) returned {resp.status_code}: {resp.text[:200]}"
+                )
             except Exception as e:
-                logger.debug(f"[Grubhub] curl_cffi auth failed for {cid[:10]}...: {e}")
+                logger.debug(f"[Grubhub] /auth/anon failed for {cid[:12]}...: {e}")
         return ""
 
     token = await asyncio.to_thread(_try_auth)
-
-    if not token:
-        # Fallback: try httpx (original approach)
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(
-                    GH_AUTH_URL,
-                    json={
-                        "brand": "GRUBHUB",
-                        "client_id": "beta_UmWlpsR6GHQhCpmUCk",
-                        "device_id": 1,
-                        "refresh_token": "",
-                    },
-                    headers=_API_HEADERS,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    token = data.get("session_handle", {}).get("access_token", "")
-        except Exception as e:
-            logger.debug(f"[Grubhub] httpx anonymous auth failed: {e}")
 
     if token:
         _token_cache = (token, time.time() + 1800)
     return token
 
 
-def _cents_to_dollars(value) -> float:
-    if value is None:
+def _money_value(obj) -> float:
+    """Extract a dollar amount from a Grubhub money field.
+
+    Grubhub uses two shapes depending on endpoint:
+      * search_listing: {"price": <dollars>, "currency": "USD"}
+      * /restaurants/{id}: {"amount": <cents>, "currency": "USD",
+                            "styled_text": {"text": "$0.24", ...}}
+    The distinguisher is which key is present. Prefer styled_text.text when
+    available as it's the canonical display value.
+    """
+    if obj is None:
+        return 0.0
+    if isinstance(obj, dict):
+        styled = obj.get("styled_text")
+        if isinstance(styled, dict):
+            text = styled.get("text", "")
+            m = re.search(r"([\d,]+\.?\d*)", text.replace("$", ""))
+            if m:
+                try:
+                    return round(float(m.group(1).replace(",", "")), 2)
+                except ValueError:
+                    pass
+        if "price" in obj:
+            try:
+                return round(float(obj["price"]), 2)
+            except (ValueError, TypeError):
+                return 0.0
+        if "amount" in obj:
+            try:
+                return round(float(obj["amount"]) / 100, 2)
+            except (ValueError, TypeError):
+                return 0.0
         return 0.0
     try:
-        v = float(value)
-        if v == 0:
-            return 0.0
-        if abs(v) >= 100:
-            return round(v / 100, 2)
-        if abs(v) > 10 and v == int(v):
-            return round(v / 100, 2)
-        return round(v, 2)
+        return round(float(obj), 2)
     except (ValueError, TypeError):
         return 0.0
 
@@ -207,11 +239,49 @@ def _parse_restaurant(restaurant: dict) -> dict:
     name = restaurant.get("name", "")
     rest_id = str(restaurant.get("restaurant_id", ""))
 
-    fee_obj = restaurant.get("delivery_fee", {})
-    if isinstance(fee_obj, dict):
-        delivery_fee = _cents_to_dollars(fee_obj.get("amount", 0))
+    # Grubhub's top-level delivery_fee carries the *displayed* price (after
+    # any Grubhub+/promo subsidy) in whole dollars. That's what the user pays
+    # and what we want to show. Example:
+    #   {"price": 0, "currency": "USD"}  — GH+ free delivery
+    #   {"price": 3, "currency": "USD"}  — restaurant charges $3
+    # price_response.delivery_response.delivery_fee.flat_cents is the underlying
+    # restaurant fee, which attribution=GRUBHUB overrides to free. We prefer
+    # the displayed price but fall back to the flat_cents when the top-level
+    # object is missing (some search results omit it entirely).
+    price_response = restaurant.get("price_response") or {}
+    delivery_response = price_response.get("delivery_response") or {}
+
+    top_df = restaurant.get("delivery_fee")
+    delivery_fee = 0.0
+    service_fee_val = 0.0
+
+    if isinstance(top_df, dict) and "price" in top_df:
+        try:
+            delivery_fee = round(float(top_df["price"]), 2)
+        except (ValueError, TypeError):
+            delivery_fee = 0.0
+    elif top_df is not None:
+        delivery_fee = _money_value(top_df)
     else:
-        delivery_fee = _cents_to_dollars(fee_obj)
+        df_obj = delivery_response.get("delivery_fee") or {}
+        if isinstance(df_obj, dict) and "flat_cents" in df_obj:
+            try:
+                delivery_fee = round(float(df_obj["flat_cents"]) / 100, 2)
+            except (ValueError, TypeError):
+                delivery_fee = 0.0
+
+    sf_obj = delivery_response.get("service_fee") or {}
+    if isinstance(sf_obj, dict):
+        # Grubhub's service fee is % of subtotal (basis_points) with a flat
+        # floor/ceiling. Without a subtotal to anchor against, we can only
+        # surface the flat component. Ignore the cap — it overstates the fee
+        # for typical orders.
+        flat_cents = sf_obj.get("flat_cents") or 0
+        try:
+            if flat_cents and flat_cents > 0:
+                service_fee_val = round(float(flat_cents) / 100, 2)
+        except (ValueError, TypeError):
+            pass
 
     eta = int(restaurant.get("delivery_time_estimate", 0) or 35)
     if eta == 0:
@@ -237,12 +307,8 @@ def _parse_restaurant(restaurant: dict) -> dict:
     slug = restaurant.get("restaurant_slug", rest_id)
     url = f"https://www.grubhub.com/restaurant/{slug}" if slug else f"https://www.grubhub.com/restaurant/{rest_id}"
 
-    min_obj = restaurant.get("minimum_order_amount", {})
-    minimum_order = None
-    if isinstance(min_obj, dict):
-        minimum_order = _cents_to_dollars(min_obj.get("amount", 0)) or None
-    elif min_obj:
-        minimum_order = _cents_to_dollars(min_obj) or None
+    min_obj = restaurant.get("minimum_order_amount") or restaurant.get("delivery_minimum")
+    minimum_order = _money_value(min_obj) or None
 
     promo = None
     deals = restaurant.get("deals", [])
@@ -254,7 +320,7 @@ def _parse_restaurant(restaurant: dict) -> dict:
         "name": name,
         "restaurant_id": rest_id,
         "delivery_fee": delivery_fee,
-        "service_fee": 0.0,
+        "service_fee": service_fee_val,
         "eta": eta,
         "rating": rating,
         "rating_count": rating_count,
@@ -270,11 +336,7 @@ def _parse_menu_item(item: dict) -> Optional[MenuItem]:
     if not name or len(name) < 2:
         return None
 
-    price_obj = item.get("price", {})
-    if isinstance(price_obj, dict):
-        price = _cents_to_dollars(price_obj.get("amount", 0))
-    else:
-        price = _cents_to_dollars(price_obj)
+    price = _money_value(item.get("price"))
 
     if price <= 0:
         return None
@@ -490,7 +552,7 @@ class GrubhubScraper(BaseScraper):
             "orderMethod": "delivery",
             "locationMode": "DELIVERY",
             "facetSet": "umaNew",
-            "pageSize": 20,
+            "pageSize": 50,
             "hideHateos": "true",
             "queryText": query,
             "latitude": lat,
@@ -630,14 +692,20 @@ class GrubhubScraper(BaseScraper):
             now = datetime.now(timezone.utc).isoformat()
 
             menu_items = []
+            seen_ids: set = set()
             for category in (restaurant.get("menu_category_list") or []):
                 for item in (category.get("menu_item_list") or [])[:30]:
+                    item_id = str(item.get("id", ""))
+                    if item_id and item_id in seen_ids:
+                        continue
                     mi = _parse_menu_item(item)
                     if mi:
+                        if item_id:
+                            seen_ids.add(item_id)
                         menu_items.append(mi)
-                    if len(menu_items) >= 50:
+                    if len(menu_items) >= 60:
                         break
-                if len(menu_items) >= 50:
+                if len(menu_items) >= 60:
                     break
 
             rd = _parse_restaurant(restaurant)

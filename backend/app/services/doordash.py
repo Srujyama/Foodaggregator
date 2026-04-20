@@ -483,7 +483,6 @@ class DoorDashScraper(BaseScraper):
         cookie_header = f"dd_delivery_address={loc_cookie}"
 
         try:
-            # Use curl_cffi in a thread to avoid blocking the event loop
             import asyncio
             html = await asyncio.to_thread(_cffi_get, url, cookie_header)
 
@@ -493,6 +492,32 @@ class DoorDashScraper(BaseScraper):
             stores = _extract_rsc_stores(html)
             if not stores:
                 logger.warning(f"[DoorDash] No stores found in RSC payload for '{query}'")
+                return []
+
+            # Sanity-check the location DoorDash actually used. DoorDash ignores
+            # the dd_delivery_address cookie and relies on the caller's public
+            # IP for geolocation. From a non-residential/datacenter IP this
+            # routes to a wrong market, giving irrelevant results.
+            full_text = _extract_rsc_text(html)
+            response_lats = re.findall(r'"store_latitude":(\-?[0-9.]+)', full_text)
+            response_lngs = re.findall(r'"store_longitude":(\-?[0-9.]+)', full_text)
+            mismatch = False
+            if response_lats and response_lngs:
+                try:
+                    # Use median to avoid outliers
+                    sample_lat = sorted(float(x) for x in response_lats[:20])[len(response_lats[:20]) // 2]
+                    sample_lng = sorted(float(x) for x in response_lngs[:20])[len(response_lngs[:20]) // 2]
+                    if abs(sample_lat - lat) > 1.5 or abs(sample_lng - lng) > 1.5:
+                        logger.warning(
+                            f"[DoorDash] IP-geo mismatch: asked for ({lat:.2f},{lng:.2f}) "
+                            f"but results are near ({sample_lat:.2f},{sample_lng:.2f}). "
+                            f"Dropping results — would be irrelevant to requested location."
+                        )
+                        mismatch = True
+                except (ValueError, TypeError):
+                    pass
+
+            if mismatch:
                 return []
 
             results = self._build_results(stores)

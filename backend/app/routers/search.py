@@ -13,7 +13,7 @@ _aggregator = AggregatorService()
 async def search_restaurants(
     q: str = Query(..., min_length=1, description="Search query (restaurant name or dish)"),
     location: str = Query(..., min_length=1, description="Location (city, ZIP, or address)"),
-    limit: int = Query(20, ge=1, le=50),
+    limit: int = Query(100, ge=1, le=200),
     platforms: str = Query(None, description="Comma-separated platform filter"),
     mode: str = Query("delivery", description="Order mode: delivery or pickup"),
 ):

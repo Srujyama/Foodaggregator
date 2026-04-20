@@ -35,21 +35,75 @@ def _compute_pickup_cost(p: PlatformResult) -> float:
 
 
 _NON_RESTAURANT_KEYWORDS = {
-    "7-eleven", "711", "pet", "petsmart", "petco", "cvs", "walgreens",
-    "speedway", "circle k", "chevron", "safeway", "grocery outlet",
-    "smart & final", "costco", "dollar tree", "dollar general",
-    "foodsco", "restaurant depot", "chef'store", "chefstore",
-    "pet food express", "home depot", "lowes", "target",
-    "lowe's", "rebel convenience", "cumberland farms", "sprouts farmers",
-    "jetro cash", "price choice", "portofino wine",
-    "rite aid", "duane reade", "wawa", "sheetz", "autozone",
-    "ace hardware", "family dollar", "five below", "michaels",
-    "bed bath", "staples", "office depot", "best buy",
+    # Convenience / gas
+    "7-eleven", "7 eleven", "711", "speedway", "circle k", "chevron",
+    "wawa", "sheetz", "cumberland farms", "rebel convenience",
+    "farragut gas", "smoke stax", "quickstop", "convenience",
+    # Drug / pharmacy
+    "cvs", "walgreens", "rite aid", "duane reade", "pharmacy",
+    # Pet
+    "pet shop", "petsmart", "petco", "pet food express", "pet market",
+    "pets square", "pet store", "pet supply", "dog food", "cat food",
+    # Grocery / supermarket
+    "grocery", "groceries", "grocer", "grocers",
+    "supermarket", "deli & grocery", "grocery & beer",
+    "beer & grocery", "fresh market", "farmers market", "fruit market",
+    "grocery outlet", "foodsco", "foodtown", "food town", "smart & final",
+    "costco", "restaurant depot", "chef'store", "chefstore",
+    "sprouts farmers", "jetro cash", "price choice",
+    "safeway", "wegmans", "trader joe", "whole foods", "citarella",
+    "morton williams", "westside market", "save a lot", "pioneer supermarkets",
+    "freshdirect", "fresh direct", "green valley", "cherry valley",
+    "ajay grocery", "uber eats market", "liberty deli", "green fruit",
+    "king fruit", "village farm", "big apple essential", "essential grocery",
+    "best beer", "brooklyn grocery", "brooklyn grocers", "chestnut market",
+    "atlantis (", "union market", "indian groceries", "ermina",
+    "greenwood market", "east village beer", "pioneer supermarket",
+    "international groceries", "sun liquor", "portofino wine",
+    "green star foods", "fresh foods", "star foods",
+    "gourmet market", "food mart", "foodmart",
+    # Liquor / wine / beer
+    "wine & liquor", "wine and liquor", "liquor", "beer shop",
+    "wine shop", "spirits", "liquors", "wine & spirits", "grandview wine",
+    "stop & go liquors", "nyc beer", "keg store", "central wine",
+    "village wines", "liberty beer",
+    # Dollar / hardware / general merchandise
+    "dollar tree", "dollar general", "family dollar", "five below",
+    "home depot", "lowes", "lowe's", "target", "walmart",
+    "ace hardware", "michaels", "bed bath", "staples", "office depot",
+    "best buy", "autozone", "super bros", "pacsun", "emilia george",
+    "gopuff", "go puff",
+    # Delis / corner stores masquerading as restaurants
+    "gourmet deli", "deli and grocery", "corner deli", "farmers deli",
+    "ice cream shop", "ice cream and dessert", "cut flowers",
+    "canal smoke", "smoke gift", "smoke beer", "smoke convenience",
+    "brbr", "supreme pizza and grocery", "beer and grocery",
+    "island deli", "super buy-rite", "pool and spa", "flower",
+    "grocers and fresh",
+    # Smoke / vape shops
+    "smoke shop", "vape shop", "cbd", "head shop",
+    # Non-food
+    "nail salon", "barber", "hair salon", "gas station",
+    "housewares", "hardware", "flower shop", "florist",
+    "bodega", "smoke & beer", "news stand", "newsstand",
+    # National grocery / supermarket chains commonly on UE/Postmates
+    "royal farms", "redner", "acme markets", "acme market",
+    "giant food", "food lion", "stop & shop", "shoprite",
+    "shop rite", "harris teeter", "publix", "kroger",
+    "vons", "ralphs", "albertsons", "ralph's", "save mart",
+    "food 4 less", "winn-dixie", "winn dixie", "hannaford",
+    "weis markets", "ingles", "fresh thyme", "sprouts",
+    "h mart", "h-mart", "99 ranch", "asia market",
+    # Cinema / entertainment
+    "cinemas", "regal cinemas", "amc theatres", "amc theatre",
+    "movie theatre", "movie theater",
+    # Flowers / gifts / tobacco
+    "bouquet", "flower bar",
 }
 
 
 def _is_likely_non_restaurant(name: str) -> bool:
-    """Filter out convenience stores, pet shops, etc. from results."""
+    """Filter out convenience stores, pet shops, groceries, etc."""
     lower = name.lower()
     return any(kw in lower for kw in _NON_RESTAURANT_KEYWORDS)
 
@@ -61,17 +115,26 @@ def _normalize_name(name: str) -> str:
     dash-separated location tags like '- Tribeca' that platforms add.
     """
     name = name.lower().strip()
+    # Strip trademark symbols (Chipotle uses ®, McDonald's® etc.)
+    name = re.sub(r"[®™©]", "", name)
     # Strip parenthetical address/location suffixes: "(45 Catherine St)", "(Downtown)"
     name = re.sub(r"\s*\([^)]*(?:st|ave|blvd|rd|dr|way|ln|ct|pl|pkwy|hwy|\d{3,})[^)]*\)$", "", name, flags=re.IGNORECASE)
+    # Strip any trailing parenthetical (handles "(Eden Square SC.)" etc.)
+    name = re.sub(r"\s*\([^)]{1,60}\)\s*$", "", name)
     # Strip trailing dash-location: "- Tribeca", "- Downtown", "- Hudson Yards"
-    name = re.sub(r"\s*-\s*(?:downtown|midtown|uptown|soho|tribeca|fidi|chelsea|harlem|williamsburg|brooklyn|queens|bronx|astoria|bushwick|les|uws|ues|hudson yards|east village|west village|murray hill|flatiron|gramercy|hell'?s kitchen|nolita|noho|dumbo|cobble hill|park slope|prospect heights|crown heights|bed-stuy|greenpoint|sunset park|bay ridge|jackson heights|long island city|times square|union square|financial district|lower east side|upper west side|upper east side)\s*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s*-\s*(?:downtown|midtown|uptown|soho|tribeca|fidi|chelsea|harlem|williamsburg|brooklyn|queens|bronx|astoria|bushwick|les|uws|ues|hudson yards|east village|west village|murray hill|flatiron|gramercy|hell'?s kitchen|nolita|noho|dumbo|cobble hill|park slope|prospect heights|crown heights|bed-stuy|greenpoint|sunset park|bay ridge|jackson heights|long island city|times square|union square|financial district|lower east side|upper west side|upper east side|newark|oakland|berkeley|manhattan)\s*$", "", name, flags=re.IGNORECASE)
+    # Strip common brand qualifiers that differ between platforms
     for suffix in [
         r"\s*-\s*delivery$", r"\s*\(delivery\)$", r"\s*restaurant$",
-        r"\s*grill$", r"\s*kitchen$", r"\s*express$",
+        r"\s+mexican\s+grill$", r"\s+grill\s*&?\s*chill$",
+        r"\s+grill$", r"\s+kitchen$", r"\s+express$",
+        r"\s+pizza$",  # "Domino's Pizza" vs "Domino's"
+        r"\s+bar\s*&\s*grill$", r"\s+bar\s+and\s+grill$",
     ]:
         name = re.sub(suffix, "", name)
     name = re.sub(r"[^\w\s]", "", name)
-    return name.strip()
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
 
 
 def _normalize_menu_item_name(name: str) -> str:
@@ -97,13 +160,37 @@ def _fuzzy_group(all_results: list[PlatformResult]) -> dict[str, list[PlatformRe
     groups: dict[str, list[PlatformResult]] = {}
     group_keys: list[str] = []
 
+    def _matches(a: str, b: str) -> bool:
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        # Primary: token_sort_ratio threshold
+        if fuzz.token_sort_ratio(a, b) >= FUZZY_THRESHOLD:
+            return True
+        # Secondary: token_set_ratio handles unordered and missing tokens
+        # (e.g. "chipotle" vs "chipotle mexican"), but gate on a strong
+        # partial_ratio so we don't merge "pizza" with "taco bell pizza".
+        if (
+            fuzz.token_set_ratio(a, b) >= 92
+            and fuzz.partial_ratio(a, b) >= 88
+        ):
+            return True
+        # Tertiary: one name is a strict prefix of the other AND the shorter
+        # one is at least 5 chars (avoid 'joe' merging into 'joe's pizza').
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        if len(shorter) >= 5 and (
+            longer.startswith(shorter + " ") or longer.endswith(" " + shorter)
+        ):
+            return True
+        return False
+
     for result in all_results:
         norm = _normalize_name(result.restaurant_name)
         matched_key = None
 
         for key in group_keys:
-            score = fuzz.token_sort_ratio(norm, key)
-            if score >= FUZZY_THRESHOLD:
+            if _matches(norm, key):
                 # Don't merge if group already has a result from this platform
                 existing_platforms = {r.platform for r in groups[key]}
                 if result.platform in existing_platforms:
@@ -267,16 +354,25 @@ def _build_aggregated(query: str, location: str, group: list[PlatformResult]) ->
 
 class AggregatorService:
     def __init__(self):
+        # Core platforms: actively maintained integrations.
+        # Secondary integrations (Seamless/EatStreet/GoPuff) are disabled by
+        # default because (a) Seamless shares its entire backend with Grubhub
+        # so duplicating it adds noise without value, (b) EatStreet requires
+        # client-side auth we can't replicate from a backend, and (c) GoPuff
+        # is essentials-delivery (pharmacy/convenience) which we filter out.
+        # Set ENABLE_SECONDARY_PLATFORMS=1 to include them.
+        import os
         self.scrapers = {
             Platform.UBER_EATS: UberEatsScraper(),
             Platform.DOORDASH: DoorDashScraper(),
             Platform.GRUBHUB: GrubhubScraper(),
             Platform.POSTMATES: PostmatesScraper(),
-            Platform.SEAMLESS: SeamlessScraper(),
             Platform.CAVIAR: CaviarScraper(),
-            Platform.GOPUFF: GopuffScraper(),
-            Platform.EATSTREET: EatStreetScraper(),
         }
+        if os.environ.get("ENABLE_SECONDARY_PLATFORMS"):
+            self.scrapers[Platform.SEAMLESS] = SeamlessScraper()
+            self.scrapers[Platform.EATSTREET] = EatStreetScraper()
+            self.scrapers[Platform.GOPUFF] = GopuffScraper()
 
     async def search(
         self, query: str, location: str, timeout: float = 20.0
@@ -316,13 +412,37 @@ class AggregatorService:
             if group
         ]
 
-        # Sort by best deal (lowest total fees) across all platforms
+        # Rank: prefer (a) results matching the query, (b) more platforms,
+        # (c) lower fees. Pure fee-sort buries actual query matches behind
+        # unrelated $0-delivery-fee groceries.
+        query_tokens = {t for t in _normalize_name(query).split() if len(t) >= 3}
+
+        def _match_score(a: AggregatedResult) -> int:
+            norm = _normalize_name(a.restaurant_name)
+            if not query_tokens:
+                return 0
+            hits = sum(1 for t in query_tokens if t in norm)
+            return hits
+
         aggregated.sort(
-            key=lambda a: min(_compute_total_cost(p) for p in a.platforms)
+            key=lambda a: (
+                -_match_score(a),              # query-matching first
+                -len(a.platforms),             # more platforms = higher confidence
+                min(_compute_total_cost(p) for p in a.platforms),
+            )
         )
 
         # Enrich top results with menu data (parallel, best-effort)
-        await self._enrich_menus(aggregated[:12], location)
+        ENRICH_TOP_N = 25
+        await self._enrich_menus(aggregated[:ENRICH_TOP_N], location)
+
+        # Menus were empty when _build_aggregated first ran, so the cross-platform
+        # price comparison was empty. Rebuild it now that menus are populated.
+        for agg_result in aggregated[:ENRICH_TOP_N]:
+            agg_result.menu_comparison = _build_menu_comparison(agg_result.platforms)
+            agg_result.avg_menu_markup_by_platform = _compute_avg_markup(
+                agg_result.platforms, agg_result.menu_comparison
+            )
 
         return aggregated
 

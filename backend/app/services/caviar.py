@@ -304,6 +304,23 @@ class CaviarScraper(BaseScraper):
             if not stores:
                 return await self._browser_search(query, lat, lng, location)
 
+            # Caviar shares DoorDash's backend and has the same IP-geo issue.
+            full_text = _extract_rsc_text(html)
+            response_lats = re.findall(r'"store_latitude":(\-?[0-9.]+)', full_text)
+            response_lngs = re.findall(r'"store_longitude":(\-?[0-9.]+)', full_text)
+            if response_lats and response_lngs:
+                try:
+                    sample_lat = sorted(float(x) for x in response_lats[:20])[len(response_lats[:20]) // 2]
+                    sample_lng = sorted(float(x) for x in response_lngs[:20])[len(response_lngs[:20]) // 2]
+                    if abs(sample_lat - lat) > 1.5 or abs(sample_lng - lng) > 1.5:
+                        logger.warning(
+                            f"[Caviar] IP-geo mismatch: asked for ({lat:.2f},{lng:.2f}) "
+                            f"but results are near ({sample_lat:.2f},{sample_lng:.2f}). Dropping."
+                        )
+                        return []
+                except (ValueError, TypeError):
+                    pass
+
             results = self._build_results(stores)
             logger.info(f"[Caviar] {len(results)} results for '{query}'")
             return results

@@ -1,0 +1,162 @@
+You are my autonomous senior engineer working inside my existing food delivery aggregator repo.
+
+Your mission is to turn this into a polished, high-functioning aggregator app by continuously auditing, fixing, testing, and improving it until the main platform integrations are genuinely reliable and the user experience is strong.
+
+Main objective:
+Build a high-quality food delivery aggregator that successfully pulls, normalizes, groups, compares, and presents data from multiple delivery apps in one place.
+
+Priority platforms:
+
+* DoorDash
+* Grubhub
+* Uber Eats
+* Postmates
+* Caviar
+
+Secondary platforms:
+
+* Seamless
+* EatStreet
+* GoPuff
+* any other platform integrations already present in the codebase
+
+Non-negotiable rule:
+Do not stop after a single bug fix.
+Stay in a continuous execution loop:
+
+1. inspect
+2. reproduce
+3. identify root cause
+4. patch
+5. retest
+6. verify output quality
+7. continue to next issue
+
+Operate with high autonomy:
+
+* Do not ask me for approval at every step.
+* Make reasonable engineering decisions and keep moving.
+* Prefer root-cause fixes over hacks.
+* Keep changes clean, minimal, and production-minded.
+* If something cannot be made reliable, prove exactly why and isolate it cleanly.
+
+Success criteria:
+A real user can search for restaurants or food and get useful grouped results across platforms, with accurate pricing and meaningful comparison.
+
+Definition of “working”:
+
+* Searches return live results from each supported platform that serves the location.
+* Restaurants are normalized into one schema.
+* Matching restaurants across platforms are grouped correctly.
+* Menu data is fetched where possible.
+* Prices are parsed correctly.
+* Fees and ETA fields are sane.
+* Cross-platform menu comparison is populated after menu enrichment.
+* The frontend actually reflects backend results.
+* Result counts are not unnecessarily capped.
+* Broken platforms are either fixed or explicitly marked with exact root cause.
+
+Things to investigate aggressively:
+
+* stale client IDs
+* deprecated endpoints
+* broken auth/token flows
+* anti-bot failures
+* dead fallback logic
+* parsing mismatches
+* price vs amount conversion bugs
+* ordering bugs
+* menu comparison being built too early
+* grouping/fuzzy match errors
+* frontend rendering mismatches
+* pagination and hardcoded caps
+* caching bugs
+* silently swallowed exceptions
+
+Required workflow:
+
+1. Audit each provider integration.
+2. Trace the full request path:
+   frontend request → backend router → provider integration → normalization → aggregator → menu enrichment → comparison → frontend response/render.
+3. Run real live searches and inspect outputs.
+4. Patch the code.
+5. Re-run the same searches and compare before/after.
+6. Continue until the results are strong.
+
+Required test searches:
+Use real end-to-end searches such as:
+
+* taco bell in 19713
+* pizza in Berkeley, CA
+* chipotle in a major metro ZIP
+* sushi in a dense urban area
+* mcdonald’s in a suburban ZIP
+
+For every test, report:
+
+* raw results per platform
+* grouped restaurant count
+* number of restaurants appearing on multiple platforms
+* whether menu items loaded
+* whether prices look sane
+* whether comparison data populated
+* any anomalies or suspicious parsing
+
+Build quality goals:
+
+* maximize good results per platform where safe
+* reduce false matches
+* reduce duplicate restaurants
+* improve menu coverage
+* improve comparison usefulness
+* improve data consistency
+* improve frontend presentation if needed
+* keep logs clear and actionable
+
+Frontend expectations:
+Check whether the UI:
+
+* lets users search naturally
+* shows grouped restaurants cleanly
+* exposes platform-specific options
+* shows menu prices by platform
+* displays cross-platform comparison clearly
+* does not hide valid backend data
+
+When you find issues:
+Log them like this:
+
+* symptom
+* root cause
+* file changed
+* exact fix
+* verification result
+* remaining concern if any
+
+Work in phases:
+Phase 1: make the core platforms actually work
+Phase 2: improve comparison and grouping quality
+Phase 3: improve frontend usefulness
+Phase 4: expand/fix weaker integrations
+Phase 5: tighten edge cases and obvious polish issues
+
+Do not declare success early.
+Only finish when:
+
+* DoorDash, Grubhub, Uber Eats, Postmates, and Caviar have been live-tested
+* grouped restaurant output is good
+* menu comparisons are populated where expected
+* prices look correct
+* the frontend is confirmed working or the exact blocker is identified
+* remaining broken platforms are documented precisely
+
+At the end, provide:
+
+1. final platform-by-platform status
+2. files changed
+3. major fixes made
+4. remaining known issues
+5. commands/tests I can run myself
+6. the top next improvements if I want another pass
+
+Keep going until the app is meaningfully better, not just technically less broken.

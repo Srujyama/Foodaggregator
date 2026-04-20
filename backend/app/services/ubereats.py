@@ -108,14 +108,16 @@ class UberEatsScraper(BaseScraper):
             "Cookie": cookie_str,
         }
 
-        # Minimal payload - extra fields cause 400 Bad Request as of 2026
+        # diningMode=DELIVERY is critical — without it UberEats returns a mix of
+        # delivery + pickup results (stores that only offer pickup, not delivery).
         payload = {
             "userQuery": query,
-            "pageInfo": {"offset": 0, "pageSize": 20},
+            "pageInfo": {"offset": 0, "pageSize": 80},
             "targetLocation": {
                 "latitude": lat,
                 "longitude": lng,
             },
+            "diningMode": "DELIVERY",
         }
 
         try:
@@ -192,27 +194,78 @@ class UberEatsScraper(BaseScraper):
                 if not name or not uuid:
                     continue
 
-                # Fees and ETA are in the meta[] array indexed by badgeType
+                # Skip pickup-only results (actionUrl has diningMode=PICKUP).
+                # We asked for DELIVERY; pickup-only stores aren't useful.
+                action_url = store.get("actionUrl") or ""
+                if "diningMode=PICKUP" in action_url:
+                    continue
+
+                # Grab tracking data for fallback fields (rating, ETA). We keep
+                # stores that aren't accepting right now so late-night queries
+                # still return results; the frontend can surface availability
+                # via promo_text if we detect it.
+                tracking = store.get("tracking") or {}
+                store_payload = tracking.get("storePayload") or {}
+                availability = store_payload.get("storeAvailablityState")
+
+                # Still drop stores that are totally dead (no ETD badge, no
+                # rating, and marked unavailable / no couriers).
+                meta_badges = {
+                    mi.get("badgeType")
+                    for mk in ("meta", "meta2", "meta4")
+                    for mi in (store.get(mk) or [])
+                    if isinstance(mi, dict)
+                }
+
+                # Scan all meta arrays (meta, meta2, meta4) for fee + ETA badges.
                 delivery_fee = 0.0
                 service_fee = 0.0
-                eta_min = 30
-                promo = None
+                eta_min = 0
+                fare_seen = False
+                eta_text_raw = ""
 
-                for meta_item in (store.get("meta") or []):
-                    badge_type = meta_item.get("badgeType", "")
-                    if badge_type == "FARE":
-                        fare_data = (meta_item.get("badgeData") or {}).get("fare") or {}
-                        delivery_fee = _parse_fee_string(
-                            fare_data.get("deliveryFee", "")
-                            or meta_item.get("text", "")
-                        )
-                        service_fee = _parse_fee_string(fare_data.get("serviceFee", ""))
-                    elif badge_type == "ETD":
-                        # "14 min" or accessibilityText "Delivered in 14 to 14 min"
-                        eta_text = meta_item.get("accessibilityText") or meta_item.get("text") or ""
-                        eta_min = _parse_eta_minutes(eta_text)
+                for meta_key in ("meta", "meta2", "meta4"):
+                    for meta_item in (store.get(meta_key) or []):
+                        if not isinstance(meta_item, dict):
+                            continue
+                        badge_type = meta_item.get("badgeType", "")
+                        if badge_type == "FARE":
+                            fare_seen = True
+                            fare_data = (meta_item.get("badgeData") or {}).get("fare") or {}
+                            df_text = fare_data.get("deliveryFee") or meta_item.get("text") or ""
+                            if df_text:
+                                delivery_fee = _parse_fee_string(df_text)
+                            sf_text = fare_data.get("serviceFee") or ""
+                            if sf_text:
+                                service_fee = _parse_fee_string(sf_text)
+                        elif badge_type == "ETD":
+                            eta_text_raw = (
+                                meta_item.get("accessibilityText")
+                                or meta_item.get("text")
+                                or ""
+                            )
 
-                # Rating: {text: "4.2", ...}
+                # Drop stores that are currently unavailable (no real ETA).
+                # Accept items with a numeric ETA, OR with a clock time (6:19AM).
+                lower_eta = eta_text_raw.lower()
+                if "currently unavailable" in lower_eta or "unavailable" in lower_eta:
+                    continue
+
+                # Parse ETA. "14 min" -> 14, "6:19AM" -> compute minutes from now
+                import re as _re
+                m_min = _re.search(r'(\d+)\s*min', eta_text_raw, _re.IGNORECASE)
+                if m_min:
+                    eta_min = int(m_min.group(1))
+                elif _re.search(r'\d+\s*:\s*\d+\s*(?:AM|PM)', eta_text_raw, _re.IGNORECASE):
+                    # "6:19AM" means next-day delivery window; use a large default.
+                    eta_min = 60
+                else:
+                    # Fall back to scanning for any integer
+                    m_any = _re.search(r'(\d+)', eta_text_raw)
+                    eta_min = int(m_any.group(1)) if m_any else 0
+
+                # Require at least one of: FARE badge, numeric ETA, or a rating.
+                # Otherwise it's almost certainly a dead/inaccessible result.
                 rating_data = store.get("rating") or {}
                 if isinstance(rating_data, dict):
                     rating_str = rating_data.get("text") or rating_data.get("ratingValue") or ""
@@ -223,19 +276,60 @@ class UberEatsScraper(BaseScraper):
                 except (ValueError, TypeError):
                     rating = None
 
+                # Pull rating count from tracking.storePayload.ratingInfo when present
+                rating_count: Optional[int] = None
+                rating_info = store_payload.get("ratingInfo") or {}
+                rc_raw = rating_info.get("ratingCount")
+                if rc_raw:
+                    # "1,500+" / "220+" / "1500"
+                    import re as _re2
+                    m = _re2.search(r'(\d[\d,]*)', str(rc_raw))
+                    if m:
+                        try:
+                            rating_count = int(m.group(1).replace(",", ""))
+                        except ValueError:
+                            pass
+
+                # Prefer high-precision rating score when available
+                rating_score = rating_info.get("storeRatingScore")
+                if rating is None and rating_score is not None:
+                    try:
+                        rating = round(float(rating_score), 2)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Pull ETA from tracking when meta badge absent
+                if eta_min == 0:
+                    etd_info = store_payload.get("etdInfo") or {}
+                    etd_range = etd_info.get("dropoffETARange") or {}
+                    try:
+                        eta_min = int(etd_range.get("min") or etd_range.get("raw") or 0)
+                    except (ValueError, TypeError):
+                        eta_min = 0
+
+                if not fare_seen and eta_min == 0 and rating is None:
+                    continue
+
+                if eta_min == 0:
+                    eta_min = 30
+
                 # Promo from signposts
+                promo = None
                 signposts = store.get("signposts") or []
                 if signposts and isinstance(signposts[0], dict):
                     promo = signposts[0].get("text")
 
-                # URL from actionUrl: "/store/dominos-45-catherine-st/pe79..."
-                action_url = store.get("actionUrl") or ""
+                # Surface unavailability so the UI can warn
+                if availability == "NO_COURIERS_NEARBY":
+                    promo = promo or "No couriers nearby"
+                elif availability == "NOT_ACCEPTING_ORDERS":
+                    promo = promo or "Not accepting orders"
+
                 if action_url.startswith("/"):
                     url = f"https://www.ubereats.com{action_url}"
                 else:
                     url = f"https://www.ubereats.com/store/{uuid}"
 
-                # Pickup ETA is typically ~70% of delivery ETA
                 pickup_eta = max(5, int(eta_min * 0.5)) if eta_min else 15
 
                 results.append(PlatformResult(
@@ -251,7 +345,7 @@ class UberEatsScraper(BaseScraper):
                     pickup_service_fee=0.0,
                     estimated_pickup_minutes=pickup_eta,
                     rating=rating,
-                    rating_count=None,
+                    rating_count=rating_count,
                     promo_text=promo,
                     fetched_at=now,
                 ))
@@ -323,14 +417,34 @@ class UberEatsScraper(BaseScraper):
             fare = store.get("fareInfo") or {}
             slug = store.get("slug") or restaurant_id
             delivery_eta = int((store.get("etaRange") or {}).get("min") or 30)
+
+            # Fee parsing: fareInfo.deliveryFee can be cents (int) or a string ("$2.99 Delivery Fee").
+            df_raw = fare.get("deliveryFee")
+            sf_raw = fare.get("serviceFee")
+            if isinstance(df_raw, str):
+                delivery_fee = _parse_fee_string(df_raw)
+            else:
+                delivery_fee = _cents_to_dollars(df_raw or 0)
+            if isinstance(sf_raw, str):
+                service_fee = _parse_fee_string(sf_raw)
+            else:
+                service_fee = _cents_to_dollars(sf_raw or 0)
+
+            # Name: title can be string OR dict {text: "..."} depending on endpoint version.
+            title_val = store.get("title", "")
+            if isinstance(title_val, dict):
+                rest_name = title_val.get("text", "") or f"Store {restaurant_id}"
+            else:
+                rest_name = str(title_val) or f"Store {restaurant_id}"
+
             return PlatformResult(
                 platform=Platform.UBER_EATS,
-                restaurant_name=store.get("title", ""),
+                restaurant_name=rest_name,
                 restaurant_id=restaurant_id,
                 restaurant_url=f"https://www.ubereats.com/store/{slug}",
                 menu_items=menu_items,
-                delivery_fee=_cents_to_dollars(fare.get("deliveryFee") or 0),
-                service_fee=_cents_to_dollars(fare.get("serviceFee") or 0),
+                delivery_fee=delivery_fee,
+                service_fee=service_fee,
                 estimated_delivery_minutes=delivery_eta,
                 pickup_available=True,
                 pickup_fee=0.0,

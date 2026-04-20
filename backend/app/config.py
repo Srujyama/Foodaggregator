@@ -10,7 +10,10 @@ class Settings(BaseSettings):
 
     # App
     environment: str = "development"
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:4173"
+    allowed_origins: str = (
+        "http://localhost:5173,http://localhost:3000,http://localhost:4173,"
+        "http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:4173"
+    )
 
     # Scraper tuning
     scraper_timeout_seconds: float = 8.0

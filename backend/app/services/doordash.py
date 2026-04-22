@@ -413,12 +413,15 @@ def _parse_eta(eta_str: Optional[str]) -> int:
     return int(m.group(1)) if m else 30
 
 
-def _cffi_get(url: str, cookies: str = "", timeout: int = 15, retries: int = 2) -> Optional[str]:
+def _cffi_get(url: str, cookies: str = "", timeout: int = 15, retries: int = 2, session=None) -> Optional[str]:
     """Fetch a URL using curl_cffi with Chrome TLS impersonation (sync).
 
     DoorDash uses Cloudflare which blocks datacenter IPs even with correct TLS
     fingerprints. This works from residential IPs but may get challenged from
     cloud servers. Retries with different browser impersonation on failure.
+
+    If `session` is provided (a curl_cffi Session), cookies persist across calls
+    — required for DoorDash's addConsumerAddressV2 → search flow.
     """
     browsers = ["chrome", "chrome110", "chrome120"]
     attempts = min(retries + 1, len(browsers))
@@ -433,13 +436,14 @@ def _cffi_get(url: str, cookies: str = "", timeout: int = 15, retries: int = 2) 
             }
             if cookies:
                 headers["Cookie"] = cookies
-            resp = cffi_requests.get(
-                url,
+            get_fn = session.get if session is not None else cffi_requests.get
+            kwargs = dict(
                 impersonate=browser,
                 headers=headers,
                 timeout=timeout,
                 allow_redirects=True,
             )
+            resp = get_fn(url, **kwargs)
             if resp.status_code != 200:
                 logger.warning(f"[DoorDash] curl_cffi ({browser}) returned {resp.status_code} for {url[:80]}")
                 continue
@@ -471,6 +475,114 @@ def _cffi_get(url: str, cookies: str = "", timeout: int = 15, retries: int = 2) 
     return None
 
 
+def _bind_address_session(lat: float, lng: float, zip_or_address: str):
+    """Create a curl_cffi Session with a DoorDash address bound to (lat, lng).
+
+    Flow:
+      1. GET www.doordash.com/ to seed anonymous session cookies (CSRF, etc.)
+      2. POST /graphql/addConsumerAddressV2 with the lat/lng. The server mints
+         a session-scoped address that overrides IP geolocation for subsequent
+         requests made with the same cookie jar.
+
+    Returns the Session on success (cookies persist), or None on failure. The
+    caller should fall through to the plain (IP-geo) flow on None.
+    """
+    try:
+        logger.info(f"[DoorDash] Attempting session bind for ({lat:.3f},{lng:.3f})")
+        session = cffi_requests.Session(impersonate="chrome")
+        # Seed cookies.
+        try:
+            session.get("https://www.doordash.com/", timeout=10, allow_redirects=True)
+        except Exception as e:
+            logger.info(f"[DoorDash] Session seed failed: {e}")
+
+        # Parse zip + state from zip_or_address for the mutation payload. DD
+        # accepts a minimal set — lat/lng are what actually matter.
+        zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", zip_or_address or "")
+        zip_code = zip_match.group(1) if zip_match else ""
+
+        mutation = (
+            "mutation addConsumerAddressV2("
+            "$googlePlaceId: String!, $printableAddress: String!, "
+            "$lat: Float!, $lng: Float!, $city: String!, $state: String!, "
+            "$zipCode: String!, $shortname: String!, $subpremise: String, "
+            "$driverInstructions: String, $dropoffOptionId: String, "
+            "$manualLat: Float, $manualLng: Float, "
+            "$addressLinkType: AddressLinkType, "
+            "$buildingName: String, $entryCode: String) { "
+            "addConsumerAddressV2(googlePlaceId: $googlePlaceId, "
+            "printableAddress: $printableAddress, lat: $lat, lng: $lng, "
+            "city: $city, state: $state, zipCode: $zipCode, "
+            "shortname: $shortname, subpremise: $subpremise, "
+            "driverInstructions: $driverInstructions, "
+            "dropoffOptionId: $dropoffOptionId, manualLat: $manualLat, "
+            "manualLng: $manualLng, addressLinkType: $addressLinkType, "
+            "buildingName: $buildingName, entryCode: $entryCode) { "
+            "id defaultAddress { id street city state zipCode printableAddress "
+            "lat lng __typename } __typename } }"
+        )
+        variables = {
+            "googlePlaceId": f"manual:{zip_code or f'{lat:.4f},{lng:.4f}'}",
+            "printableAddress": zip_or_address or f"{lat},{lng}",
+            "lat": float(f"{lat:.6f}"),
+            "lng": float(f"{lng:.6f}"),
+            "city": "",
+            "state": "",
+            "zipCode": zip_code or "",
+            "shortname": "Home",
+            "subpremise": "",
+            "driverInstructions": "",
+            "dropoffOptionId": "2",
+            "manualLat": float(f"{lat:.6f}"),
+            "manualLng": float(f"{lng:.6f}"),
+            "addressLinkType": "ADDRESS_LINK_TYPE_UNSPECIFIED",
+            "entryCode": "",
+            "buildingName": "",
+        }
+        body = {
+            "operationName": "addConsumerAddressV2",
+            "variables": variables,
+            "query": mutation,
+        }
+        gql_headers = {
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Origin": "https://www.doordash.com",
+            "Referer": "https://www.doordash.com/home",
+            "Apollographql-Client-Name": "@doordash/app-consumer-production-ssr-client",
+            "Apollographql-Client-Version": "3.0.0",
+            "X-Experience-Id": "doordash",
+            "X-Channel-Id": "marketplace",
+        }
+        resp = session.post(
+            "https://www.doordash.com/graphql/addConsumerAddressV2?operation=addConsumerAddressV2",
+            json=body,
+            headers=gql_headers,
+            timeout=12,
+            allow_redirects=True,
+        )
+        if resp.status_code != 200:
+            body_preview = (resp.text or "")[:200]
+            logger.warning(
+                f"[DoorDash] addConsumerAddressV2 returned {resp.status_code} — "
+                f"falling back to IP-geo. body: {body_preview!r}"
+            )
+            return None
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning("[DoorDash] addConsumerAddressV2 non-JSON response — falling back")
+            return None
+        if data.get("errors"):
+            logger.warning(f"[DoorDash] addConsumerAddressV2 errors: {str(data.get('errors'))[:400]}")
+            return None
+        logger.info(f"[DoorDash] Bound session to ({lat:.3f},{lng:.3f}) via addConsumerAddressV2")
+        return session
+    except Exception as e:
+        logger.info(f"[DoorDash] Session bind failed: {e} — falling back")
+        return None
+
+
 class DoorDashScraper(BaseScraper):
     PLATFORM_NAME = "doordash"
 
@@ -484,7 +596,13 @@ class DoorDashScraper(BaseScraper):
 
         try:
             import asyncio
-            html = await asyncio.to_thread(_cffi_get, url, cookie_header)
+            # First try to bind a session to the requested lat/lng. If that
+            # succeeds, DD will return stores near the address instead of the
+            # caller's IP. If it fails, fall through to the plain request.
+            session = await asyncio.to_thread(_bind_address_session, lat, lng, location)
+            html = await asyncio.to_thread(
+                _cffi_get, url, cookie_header, 15, 2, session
+            )
 
             if not html:
                 return []
@@ -494,31 +612,34 @@ class DoorDashScraper(BaseScraper):
                 logger.warning(f"[DoorDash] No stores found in RSC payload for '{query}'")
                 return []
 
-            # Sanity-check the location DoorDash actually used. DoorDash ignores
-            # the dd_delivery_address cookie and relies on the caller's public
-            # IP for geolocation. From a non-residential/datacenter IP this
-            # routes to a wrong market, giving irrelevant results.
+            # If we have store coordinates, sort by distance from the requested
+            # location so the closest stores appear first — but do NOT drop
+            # anything. The previous implementation discarded stores > ~100mi
+            # and capped the far-fallback at 10, which truncated legitimate
+            # results whenever DoorDash returned a mix of local and distant
+            # stores (common when session-binding is partial).
             full_text = _extract_rsc_text(html)
-            response_lats = re.findall(r'"store_latitude":(\-?[0-9.]+)', full_text)
-            response_lngs = re.findall(r'"store_longitude":(\-?[0-9.]+)', full_text)
-            mismatch = False
-            if response_lats and response_lngs:
-                try:
-                    # Use median to avoid outliers
-                    sample_lat = sorted(float(x) for x in response_lats[:20])[len(response_lats[:20]) // 2]
-                    sample_lng = sorted(float(x) for x in response_lngs[:20])[len(response_lngs[:20]) // 2]
-                    if abs(sample_lat - lat) > 1.5 or abs(sample_lng - lng) > 1.5:
-                        logger.warning(
-                            f"[DoorDash] IP-geo mismatch: asked for ({lat:.2f},{lng:.2f}) "
-                            f"but results are near ({sample_lat:.2f},{sample_lng:.2f}). "
-                            f"Dropping results — would be irrelevant to requested location."
-                        )
-                        mismatch = True
-                except (ValueError, TypeError):
-                    pass
+            store_coords: dict[str, tuple[float, float]] = {}
+            for sm in re.finditer(r'"store_id":"(\d+)"', full_text):
+                sid = sm.group(1)
+                if sid in store_coords:
+                    continue
+                w = full_text[sm.end(): sm.end() + 1500]
+                lat_m = re.search(r'"store_latitude":(\-?[0-9.]+)', w)
+                lng_m = re.search(r'"store_longitude":(\-?[0-9.]+)', w)
+                if lat_m and lng_m:
+                    try:
+                        store_coords[sid] = (float(lat_m.group(1)), float(lng_m.group(1)))
+                    except ValueError:
+                        pass
 
-            if mismatch:
-                return []
+            def _dist_sq(s):
+                c = store_coords.get(s.get("store_id"))
+                if c is None:
+                    return float("inf")
+                return (c[0] - lat) ** 2 + (c[1] - lng) ** 2
+
+            stores.sort(key=_dist_sq)
 
             results = self._build_results(stores)
             logger.info(f"[DoorDash] {len(results)} results for '{query}' near ({lat:.3f},{lng:.3f})")
@@ -591,7 +712,10 @@ class DoorDashScraper(BaseScraper):
             url = f"https://www.doordash.com/store/{restaurant_id}/"
 
             import asyncio
-            html = await asyncio.to_thread(_cffi_get, url, cookie_header)
+            session = await asyncio.to_thread(_bind_address_session, lat, lng, location)
+            html = await asyncio.to_thread(
+                _cffi_get, url, cookie_header, 15, 2, session
+            )
 
             if not html:
                 return None

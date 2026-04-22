@@ -451,7 +451,7 @@ def _extract_from_next_data(data: dict) -> list[dict]:
     results = []
 
     def _walk(obj, depth=0):
-        if depth > 10 or len(results) >= 20:
+        if depth > 10 or len(results) >= 100:
             return
         if isinstance(obj, dict):
             # Look for restaurant-like objects
@@ -504,7 +504,7 @@ def _extract_from_state(state: dict) -> list[dict]:
             "restaurant_id" in value or "restaurantId" in value or "restaurant" in key.lower()
         ):
             results.append(value)
-    return results[:20]
+    return results[:100]
 
 
 def _extract_restaurants_from_json(data, depth=0) -> list[dict]:
@@ -519,13 +519,44 @@ def _extract_restaurants_from_json(data, depth=0) -> list[dict]:
                 for item in data[:3]
             )
             if has_restaurant_keys:
-                return data[:20]
+                return data[:100]
     if isinstance(data, dict):
         for v in data.values():
             result = _extract_restaurants_from_json(v, depth + 1)
             if result:
                 return result
     return []
+
+
+_STOPWORDS = {"the", "and", "of", "a", "an", "for", "to", "in", "on", "at", "by", "near", "me"}
+
+
+def _query_tokens(query: str) -> list[str]:
+    """Tokenize a user query for name-match filtering.
+
+    Strips digits/ZIPs (users commonly search "taco bell 19713") and short
+    stopwords so only meaningful brand tokens remain.
+    """
+    cleaned = re.sub(r"\b\d{3,}\b", " ", query.lower())
+    tokens = re.findall(r"[a-z]+", cleaned)
+    return [t for t in tokens if len(t) >= 2 and t not in _STOPWORDS]
+
+
+def _name_matches_query(name: str, tokens: list[str]) -> bool:
+    """True if the restaurant name matches the query tokens.
+
+    Grubhub's search_listing endpoint uses `queryText` as a relevance hint, not
+    a hard filter, and happily returns nearby restaurants whose names contain
+    none of the query tokens. DoorDash/UberEats/Postmates all filter server-
+    side on the query path, so we mirror that here to keep the 4 platforms in
+    sync.
+    """
+    if not tokens:
+        return True
+    lname = name.lower()
+    # All non-common tokens must appear (substring match handles "Taco Bell
+    # Cantina", "Taco Bell Express", etc.).
+    return all(t in lname for t in tokens)
 
 
 class GrubhubScraper(BaseScraper):
@@ -535,15 +566,23 @@ class GrubhubScraper(BaseScraper):
         lat, lng = await geocode(location)
         token = await _get_token()
 
+        tokens = _query_tokens(query)
+
         # Try API-based search first if we have a token
         if token:
             api_results = await self._api_search(query, lat, lng, token)
             if api_results:
-                return api_results
+                filtered = [r for r in api_results if _name_matches_query(r.restaurant_name, tokens)]
+                # Only fall through to web scrape if filtering wiped everything.
+                if filtered or not tokens:
+                    return filtered if tokens else api_results
 
         # Fall back to web scraping
         logger.info("[Grubhub] Trying web scraping fallback")
-        return await self._web_search(query, lat, lng)
+        web_results = await self._web_search(query, lat, lng)
+        if tokens:
+            web_results = [r for r in web_results if _name_matches_query(r.restaurant_name, tokens)]
+        return web_results
 
     async def _api_search(self, query: str, lat: float, lng: float, token: str) -> list[PlatformResult]:
         """Search via Grubhub API with bearer token."""

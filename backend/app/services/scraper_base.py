@@ -77,19 +77,25 @@ class BaseScraper(ABC):
         )
 
     @abstractmethod
-    async def search(self, query: str, location: str) -> list[PlatformResult]:
+    async def search(
+        self, query: str, location: str, mode: str = "delivery"
+    ) -> list[PlatformResult]:
         """Search for restaurants/dishes. Must never raise - return [] on failure."""
         ...
 
     @abstractmethod
-    async def get_restaurant(self, restaurant_id: str, location: str) -> Optional[PlatformResult]:
+    async def get_restaurant(
+        self, restaurant_id: str, location: str, mode: str = "delivery"
+    ) -> Optional[PlatformResult]:
         """Get detailed data for one restaurant. Returns None on failure."""
         ...
 
-    async def _safe_search(self, query: str, location: str) -> list[PlatformResult]:
+    async def _safe_search(
+        self, query: str, location: str, mode: str = "delivery"
+    ) -> list[PlatformResult]:
         """Wrapper that catches all exceptions and returns []."""
         try:
-            return await self.search(query, location)
+            return await self.search(query, location, mode)
         except asyncio.TimeoutError:
             logger.warning(f"[{self.PLATFORM_NAME}] Timeout during search for '{query}'")
             return []

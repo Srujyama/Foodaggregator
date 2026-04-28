@@ -1,12 +1,26 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ChevronRight, ChevronDown, Trophy, UtensilsCrossed, Bike, Car, Star, Menu, ExternalLink } from 'lucide-react'
+import { ChevronRight, ChevronDown, Trophy, UtensilsCrossed, Bike, Car, Star, Menu, ExternalLink, MapPin, AlertTriangle } from 'lucide-react'
 import { rankByBestDeal, computeCost, getSavings, getMenuSavings, computeTotalCost, computePickupCost } from '../utils/sorting.js'
 import { formatPrice, formatETA, slugify } from '../lib/utils.js'
 import PlatformBadge from './PlatformBadge.jsx'
 import InlineMenu from './InlineMenu.jsx'
 import { useSearchContext } from '../context/SearchContext.jsx'
 import { cn } from '../lib/utils.js'
+
+function pickRichest(platforms, key) {
+  for (const p of platforms) {
+    const v = p?.[key]
+    if (v && (Array.isArray(v) ? v.length : true)) return v
+  }
+  return null
+}
+
+function formatEtaRange(min, max) {
+  if (!min) return formatETA(min)
+  if (max && max !== min) return `${min}–${max} min`
+  return formatETA(min)
+}
 
 export default function RestaurantResult({ result }) {
   const { location, mode } = useSearchContext()
@@ -20,6 +34,21 @@ export default function RestaurantResult({ result }) {
   const bestRating = Math.max(
     ...result.platforms.map((p) => p.rating || 0).filter(Boolean),
   )
+
+  // Cross-platform consumer info (any platform that has it wins).
+  const categories = pickRichest(result.platforms, 'categories') || []
+  const priceBucket = pickRichest(result.platforms, 'price_bucket')
+  const distance = pickRichest(result.platforms, 'distance_text')
+  const address = pickRichest(result.platforms, 'address')
+
+  const anyClosed = result.platforms.some(
+    (p) => p.accepting_orders === false || p.is_open === false || p.is_within_delivery_range === false,
+  )
+  const anyOpen = result.platforms.some(
+    (p) => p.accepting_orders === true || p.is_open === true,
+  )
+  const allClosed = anyClosed && !anyOpen
+  const someClosed = anyClosed && anyOpen
 
   return (
     <div className="bg-white rounded-2xl border border-gray-200 hover:border-orange-200 hover:shadow-lg transition-all duration-300 overflow-hidden group">
@@ -41,6 +70,16 @@ export default function RestaurantResult({ result }) {
             <span className="text-xs text-gray-400">
               {result.platforms.length} platform{result.platforms.length !== 1 ? 's' : ''}
             </span>
+            {priceBucket && (
+              <span className="inline-flex items-center text-xs text-gray-600 bg-gray-100 border border-gray-200 rounded-full px-2 py-0.5 font-semibold">
+                {priceBucket}
+              </span>
+            )}
+            {distance && (
+              <span className="inline-flex items-center gap-1 text-xs text-gray-500 bg-white border border-gray-200 rounded-full px-2 py-0.5">
+                <MapPin className="w-3 h-3 text-gray-400" /> {distance}
+              </span>
+            )}
             {savings > 0.01 && (
               <span className="inline-flex items-center gap-1 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5 font-medium">
                 <Trophy className="w-3 h-3 text-amber-400" />
@@ -53,7 +92,33 @@ export default function RestaurantResult({ result }) {
                 Save {formatPrice(menuSavings)} on menu
               </span>
             )}
+            {allClosed && (
+              <span className="inline-flex items-center gap-1 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-full px-2 py-0.5 font-medium">
+                <AlertTriangle className="w-3 h-3" />
+                Closed on all platforms
+              </span>
+            )}
+            {someClosed && !allClosed && (
+              <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 font-medium">
+                <AlertTriangle className="w-3 h-3" />
+                Limited availability
+              </span>
+            )}
           </div>
+          {(categories.length > 0 || address) && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-xs text-gray-500">
+              {categories.slice(0, 4).map((c) => (
+                <span key={c} className="text-gray-400">
+                  · {c}
+                </span>
+              ))}
+              {address && (
+                <span className="text-gray-400 truncate max-w-[260px]">
+                  · {address}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {bestPlatform && (
@@ -67,7 +132,10 @@ export default function RestaurantResult({ result }) {
             <div className="text-xs text-gray-400">
               {isPickup
                 ? formatETA(bestPlatform.estimated_pickup_minutes)
-                : formatETA(bestPlatform.estimated_delivery_minutes)}
+                : formatEtaRange(bestPlatform.estimated_delivery_minutes, bestPlatform.estimated_delivery_minutes_max)}
+            </div>
+            <div className="text-[10px] text-gray-300 italic mt-0.5">
+              + taxes & tip
             </div>
           </div>
         )}
@@ -80,21 +148,32 @@ export default function RestaurantResult({ result }) {
             const deliveryCost = computeTotalCost(p)
             const pickupCost = computePickupCost(p)
             const isBest = i === 0
+            const unavailable =
+              p.accepting_orders === false ||
+              p.is_open === false ||
+              p.is_within_delivery_range === false
 
             return (
               <div
                 key={p.platform}
                 className={cn(
                   'rounded-xl p-3 border transition-all duration-200',
-                  isBest
+                  unavailable
+                    ? 'bg-rose-50/40 border-rose-100 opacity-75'
+                    : isBest
                     ? 'bg-amber-50 border-amber-200'
                     : 'bg-gray-50 border-gray-100',
                 )}
               >
                 <div className="flex items-center justify-between mb-2">
                   <PlatformBadge platform={p.platform} />
-                  {isBest && (
+                  {isBest && !unavailable && (
                     <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Best</span>
+                  )}
+                  {unavailable && (
+                    <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider">
+                      {p.is_within_delivery_range === false ? 'Out of range' : 'Closed'}
+                    </span>
                   )}
                 </div>
 
@@ -104,7 +183,7 @@ export default function RestaurantResult({ result }) {
                   </span>
                   <span className={cn(
                     'font-semibold tabular-nums',
-                    !isPickup && isBest ? 'text-amber-600' : 'text-gray-600',
+                    !isPickup && isBest && !unavailable ? 'text-amber-600' : 'text-gray-600',
                   )}>
                     {formatPrice(deliveryCost)}
                   </span>
@@ -116,7 +195,7 @@ export default function RestaurantResult({ result }) {
                   </span>
                   <span className={cn(
                     'font-semibold tabular-nums',
-                    isPickup && isBest ? 'text-amber-600' : 'text-gray-600',
+                    isPickup && isBest && !unavailable ? 'text-amber-600' : 'text-gray-600',
                   )}>
                     {p.pickup_available ? formatPrice(pickupCost) : 'N/A'}
                   </span>
@@ -125,7 +204,10 @@ export default function RestaurantResult({ result }) {
                 <div className="text-[10px] text-gray-400 mt-1.5 text-center">
                   {isPickup
                     ? `${formatETA(p.estimated_pickup_minutes)} pickup`
-                    : `${formatETA(p.estimated_delivery_minutes)} delivery`}
+                    : `${formatEtaRange(p.estimated_delivery_minutes, p.estimated_delivery_minutes_max)} delivery`}
+                  {p.distance_text && (
+                    <span className="text-gray-300"> · {p.distance_text}</span>
+                  )}
                 </div>
 
                 {p.restaurant_url && (

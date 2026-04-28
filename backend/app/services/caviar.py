@@ -286,7 +286,7 @@ def _parse_eta(eta_str: Optional[str]) -> int:
 class CaviarScraper(BaseScraper):
     PLATFORM_NAME = "caviar"
 
-    async def search(self, query: str, location: str) -> list[PlatformResult]:
+    async def search(self, query: str, location: str, mode: str = "delivery") -> list[PlatformResult]:
         lat, lng = await geocode(location)
         url = CAVIAR_SEARCH_URL.format(query=quote(query, safe=""))
         loc_cookie = _build_location_cookie(lat, lng, location)
@@ -391,7 +391,7 @@ class CaviarScraper(BaseScraper):
 
         return results
 
-    async def get_restaurant(self, restaurant_id: str, location: str) -> Optional[PlatformResult]:
+    async def get_restaurant(self, restaurant_id: str, location: str, mode: str = "delivery") -> Optional[PlatformResult]:
         try:
             lat, lng = await geocode(location)
             loc_cookie = _build_location_cookie(lat, lng, location)

@@ -114,7 +114,7 @@ def _parse_fee(value) -> float:
 class EatStreetScraper(BaseScraper):
     PLATFORM_NAME = "eatstreet"
 
-    async def search(self, query: str, location: str) -> list[PlatformResult]:
+    async def search(self, query: str, location: str, mode: str = "delivery") -> list[PlatformResult]:
         lat, lng = await geocode(location)
 
         # Try API and direct search in parallel (fast strategies)
@@ -386,7 +386,7 @@ class EatStreetScraper(BaseScraper):
         logger.info(f"[EatStreet] {len(results)} results")
         return results
 
-    async def get_restaurant(self, restaurant_id: str, location: str) -> Optional[PlatformResult]:
+    async def get_restaurant(self, restaurant_id: str, location: str, mode: str = "delivery") -> Optional[PlatformResult]:
         """Get full restaurant details with menu."""
         api_key = await _get_api_key()
 

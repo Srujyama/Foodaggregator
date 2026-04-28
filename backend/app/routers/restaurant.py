@@ -12,8 +12,12 @@ _aggregator = AggregatorService()
 async def get_restaurant(
     name: str,
     location: str = Query(..., min_length=1),
+    mode: str = Query("delivery", description="Order mode: delivery or pickup"),
 ):
-    result = await _aggregator.get_restaurant(name, location)
+    mode = (mode or "delivery").lower()
+    if mode not in ("delivery", "pickup"):
+        mode = "delivery"
+    result = await _aggregator.get_restaurant(name, location, mode=mode)
 
     if not result:
         raise HTTPException(

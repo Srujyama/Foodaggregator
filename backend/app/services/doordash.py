@@ -586,7 +586,7 @@ def _bind_address_session(lat: float, lng: float, zip_or_address: str):
 class DoorDashScraper(BaseScraper):
     PLATFORM_NAME = "doordash"
 
-    async def search(self, query: str, location: str) -> list[PlatformResult]:
+    async def search(self, query: str, location: str, mode: str = "delivery") -> list[PlatformResult]:
         lat, lng = await geocode(location)
 
         url = DD_SEARCH_URL.format(query=quote(query, safe=""))
@@ -702,7 +702,7 @@ class DoorDashScraper(BaseScraper):
         return results
 
     async def get_restaurant(
-        self, restaurant_id: str, location: str
+        self, restaurant_id: str, location: str, mode: str = "delivery"
     ) -> Optional[PlatformResult]:
         """Fetch full restaurant details + menu from the store page RSC payload."""
         try:
@@ -812,18 +812,54 @@ class DoorDashScraper(BaseScraper):
                     except ValueError:
                         pass
 
-                # Promo
-                promo_match = re.search(r'"promotion_delivery_fee":"([^"]+)"', full_text)
-                if not promo_match:
-                    free_match = re.search(r'(\$0(?:\.00)?\s+delivery\s+fee[^"]*)', full_text, re.IGNORECASE)
-                    if free_match:
-                        promo = free_match.group(1).strip()
-                        delivery_fee = 0.0
-                else:
+                # Promo - take a *bounded* match. The earlier unbounded
+                # `[^"]*` slurped up DoorDash's RSC stream legalese and
+                # leaked the whole blob into the response, so we cap at
+                # 80 chars and stop on common sentence terminators.
+                promo_match = re.search(r'"promotion_delivery_fee":"([^"]{1,200})"', full_text)
+                if promo_match:
                     promo = promo_match.group(1)
+                else:
+                    free_match = re.search(
+                        r'\$0(?:\.00)?\s+[Dd]elivery\s+[Ff]ees?\b[^\n.]{0,40}',
+                        full_text,
+                    )
+                    if free_match:
+                        promo = free_match.group(0).strip().rstrip(",;:")
+                        delivery_fee = 0.0
 
             # Extract menu items
             menu_items = _extract_menu_items(html)
+
+            # Address / phone / categories / hours from the RSC payload.
+            address = None
+            phone = None
+            categories: list[str] = []
+            hours_today_text = None
+            is_open = None
+            if full_text:
+                addr_m = re.search(
+                    r'"street":"([^"]{0,100})"[^{}]*?"city":"([^"]{0,60})"'
+                    r'[^{}]*?"state":"([^"]{0,3})"[^{}]*?"zip_code":"([^"]{0,15})"',
+                    full_text,
+                )
+                if addr_m:
+                    address = (
+                        f"{addr_m.group(1)}, {addr_m.group(2)}, "
+                        f"{addr_m.group(3)} {addr_m.group(4)}"
+                    )
+                phone_m = re.search(r'"business_phone_number":"([+\d\-() ]{7,20})"', full_text)
+                if phone_m:
+                    phone = phone_m.group(1)
+                cat_m = re.search(r'"cuisine[s]?":\[((?:"[^"]{1,40}",?){1,8})\]', full_text)
+                if cat_m:
+                    categories = [c.strip().strip('"') for c in cat_m.group(1).split(",") if c.strip()][:6]
+                open_m = re.search(r'"is_open":(true|false)', full_text)
+                if open_m:
+                    is_open = open_m.group(1) == "true"
+                close_m = re.search(r'"display_close_time":"([^"]{1,40})"', full_text)
+                if close_m and is_open is not False:
+                    hours_today_text = f"Open until {close_m.group(1)}"
 
             now = datetime.now(timezone.utc).isoformat()
             pickup_eta = max(5, int(eta * 0.5)) if eta else 15
@@ -844,6 +880,12 @@ class DoorDashScraper(BaseScraper):
                 rating_count=rating_count,
                 promo_text=promo,
                 fetched_at=now,
+                is_open=is_open,
+                accepting_orders=is_open,
+                address=address,
+                phone=phone,
+                categories=categories,
+                hours_today_text=hours_today_text,
             )
         except Exception as e:
             logger.warning(f"[DoorDash] get_restaurant failed: {e}")

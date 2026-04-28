@@ -1,5 +1,5 @@
 import { useSearchParams, useParams, Link } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, AlertTriangle } from 'lucide-react'
 import PlatformCard from '../components/PlatformCard.jsx'
 import DealRanking from '../components/DealRanking.jsx'
 import MenuComparison from '../components/MenuComparison.jsx'
@@ -8,7 +8,7 @@ import LoadingSpinner from '../components/LoadingSpinner.jsx'
 import PlatformBadge from '../components/PlatformBadge.jsx'
 import { useRestaurant } from '../hooks/useRestaurant.js'
 import { rankByBestDeal } from '../utils/sorting.js'
-import { formatPrice } from '../lib/utils.js'
+import { formatPrice, sanitizeHtml } from '../lib/utils.js'
 
 export default function RestaurantDetail() {
   const { slug } = useParams()
@@ -20,6 +20,8 @@ export default function RestaurantDetail() {
 
   const hasMenuItems = data?.platforms?.some((p) => p.menu_items?.length > 0)
   const hasMenuComparison = data?.menu_comparison?.length > 0
+  const allergenHtml = data?.platforms?.find((p) => p.allergen_disclaimer_html)?.allergen_disclaimer_html
+  const sanitizedAllergen = allergenHtml ? sanitizeHtml(allergenHtml) : ''
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
@@ -134,9 +136,20 @@ export default function RestaurantDetail() {
             </div>
           )}
 
+          {/* Allergen / dietary disclaimer */}
+          {sanitizedAllergen && (
+            <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 flex items-start gap-3">
+              <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+              <div className="text-xs text-amber-900 leading-relaxed allergen-disclaimer">
+                <p className="font-semibold mb-1">Allergen & dietary info</p>
+                <div dangerouslySetInnerHTML={{ __html: sanitizedAllergen }} />
+              </div>
+            </div>
+          )}
+
           {/* Disclaimer */}
           <p className="text-center text-xs text-gray-400 mt-8">
-            Prices, fees, and menu items may vary. Always confirm the final total on each platform before ordering.
+            Prices, fees, taxes, and tips may vary. Always confirm the final total on each platform before ordering.
           </p>
         </>
       )}

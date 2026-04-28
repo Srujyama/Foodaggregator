@@ -13,8 +13,8 @@ MEMORY_TTL = 300      # 5 minutes
 FIRESTORE_TTL = 1800  # 30 minutes
 
 
-def _make_key(query: str, location: str) -> str:
-    raw = f"{query.lower().strip()}::{location.lower().strip()}"
+def _make_key(query: str, location: str, mode: str = "delivery") -> str:
+    raw = f"{query.lower().strip()}::{location.lower().strip()}::{(mode or 'delivery').lower().strip()}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -64,8 +64,8 @@ async def set_in_firestore(cache_key: str, data: Any) -> None:
         logger.warning(f"Firestore set failed: {e}")
 
 
-async def get_cached(query: str, location: str) -> Optional[Any]:
-    key = _make_key(query, location)
+async def get_cached(query: str, location: str, mode: str = "delivery") -> Optional[Any]:
+    key = _make_key(query, location, mode)
 
     # Tier 1: memory
     data = get_from_memory(key)
@@ -81,8 +81,8 @@ async def get_cached(query: str, location: str) -> Optional[Any]:
     return None
 
 
-async def set_cached(query: str, location: str, data: Any) -> None:
-    key = _make_key(query, location)
+async def set_cached(query: str, location: str, data: Any, mode: str = "delivery") -> None:
+    key = _make_key(query, location, mode)
     set_in_memory(key, data)
     await set_in_firestore(key, data)
 

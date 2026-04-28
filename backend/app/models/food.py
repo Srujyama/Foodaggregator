@@ -39,6 +39,7 @@ class PlatformResult(BaseModel):
     delivery_fee: float
     service_fee: float
     estimated_delivery_minutes: int
+    estimated_delivery_minutes_max: Optional[int] = None
     # Pickup pricing
     pickup_available: bool = True
     pickup_fee: float = 0.0
@@ -50,6 +51,19 @@ class PlatformResult(BaseModel):
     rating_count: Optional[int] = None
     promo_text: Optional[str] = None
     fetched_at: str
+    # Consumer-decision fields
+    is_open: Optional[bool] = None
+    accepting_orders: Optional[bool] = None
+    is_within_delivery_range: Optional[bool] = None
+    distance_text: Optional[str] = None  # "1.2 mi"
+    categories: List[str] = []           # ["Mexican", "Burritos", ...]
+    price_bucket: Optional[str] = None   # "$" / "$$" / "$$$"
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    hours_today_text: Optional[str] = None  # "Open until 11:00 PM"
+    closing_soon: Optional[bool] = None
+    allergen_disclaimer_html: Optional[str] = None
+    status_text: Optional[str] = None    # human-readable status (e.g., "Not accepting orders", "No couriers nearby")
 
 
 class AggregatedResult(BaseModel):

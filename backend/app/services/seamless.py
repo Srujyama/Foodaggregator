@@ -293,7 +293,7 @@ def _extract_restaurants(data: dict, depth: int = 0) -> list[dict]:
 class SeamlessScraper(BaseScraper):
     PLATFORM_NAME = "seamless"
 
-    async def search(self, query: str, location: str) -> list[PlatformResult]:
+    async def search(self, query: str, location: str, mode: str = "delivery") -> list[PlatformResult]:
         lat, lng = await geocode(location)
         token = await _get_token()
 
@@ -419,7 +419,7 @@ class SeamlessScraper(BaseScraper):
                 ))
         return parsed
 
-    async def get_restaurant(self, restaurant_id: str, location: str) -> Optional[PlatformResult]:
+    async def get_restaurant(self, restaurant_id: str, location: str, mode: str = "delivery") -> Optional[PlatformResult]:
         token = await _get_token()
         if not token:
             return None

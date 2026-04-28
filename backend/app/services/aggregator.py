@@ -151,6 +151,28 @@ def _normalize_menu_item_name(name: str) -> str:
     return name.strip()
 
 
+def _dedupe_postmates_ubereats(results: list[PlatformResult]) -> list[PlatformResult]:
+    """Drop Postmates rows that share a storeUuid with an UberEats row.
+
+    Both surfaces hit the same Uber backend, so a shared restaurant_id means
+    the rows describe the literal same listing. Surfacing both as separate
+    "platforms" is misleading - the comparison should reflect actual platform
+    competition, not the same source under two domains. We keep UberEats
+    (better promo/distance signal in the wild) and drop the Postmates clone.
+    """
+    ue_ids = {
+        r.restaurant_id
+        for r in results
+        if r.platform == Platform.UBER_EATS and r.restaurant_id
+    }
+    if not ue_ids:
+        return results
+    return [
+        r for r in results
+        if not (r.platform == Platform.POSTMATES and r.restaurant_id in ue_ids)
+    ]
+
+
 def _fuzzy_group(all_results: list[PlatformResult]) -> dict[str, list[PlatformResult]]:
     """Group PlatformResults by restaurant name using fuzzy matching.
 
@@ -199,8 +221,16 @@ def _fuzzy_group(all_results: list[PlatformResult]) -> dict[str, list[PlatformRe
                 break
 
         if matched_key is None:
-            matched_key = norm
-            group_keys.append(norm)
+            # Create a fresh group key. If norm collides with an existing
+            # group (because a same-platform result already grabbed it), use
+            # a numbered suffix so we don't stomp the original group.
+            base = norm or f"_unknown_{len(group_keys)}"
+            matched_key = base
+            i = 2
+            while matched_key in groups:
+                matched_key = f"{base}#{i}"
+                i += 1
+            group_keys.append(matched_key)
             groups[matched_key] = []
 
         groups[matched_key].append(result)
@@ -375,12 +405,16 @@ class AggregatorService:
             self.scrapers[Platform.GOPUFF] = GopuffScraper()
 
     async def search(
-        self, query: str, location: str, timeout: float = 20.0
+        self,
+        query: str,
+        location: str,
+        timeout: float = 20.0,
+        mode: str = "delivery",
     ) -> list[AggregatedResult]:
         """Fan out to all scrapers concurrently, merge results, rank by best deal."""
         tasks = {
             platform: asyncio.create_task(
-                asyncio.wait_for(scraper._safe_search(query, location), timeout=timeout)
+                asyncio.wait_for(scraper._safe_search(query, location, mode), timeout=timeout)
             )
             for platform, scraper in self.scrapers.items()
         }
@@ -400,6 +434,12 @@ class AggregatorService:
             r for results in results_by_platform.values() for r in results
             if not _is_likely_non_restaurant(r.restaurant_name)
         ]
+
+        # Postmates and UberEats share one Uber backend - any time a store comes
+        # back from both surfaces with the same storeUuid, it is the literal
+        # same listing. Drop the Postmates copy so the comparison reflects
+        # actual platform competition rather than two views of one store.
+        all_results = _dedupe_postmates_ubereats(all_results)
 
         if not all_results:
             return []
@@ -434,7 +474,7 @@ class AggregatorService:
 
         # Enrich top results with menu data (parallel, best-effort)
         ENRICH_TOP_N = 25
-        await self._enrich_menus(aggregated[:ENRICH_TOP_N], location)
+        await self._enrich_menus(aggregated[:ENRICH_TOP_N], location, mode=mode)
 
         # Menus were empty when _build_aggregated first ran, so the cross-platform
         # price comparison was empty. Rebuild it now that menus are populated.
@@ -447,7 +487,7 @@ class AggregatorService:
         return aggregated
 
     async def _enrich_menus(
-        self, results: list[AggregatedResult], location: str
+        self, results: list[AggregatedResult], location: str, mode: str = "delivery"
     ) -> None:
         """Fetch menu items for the top search results in parallel."""
         menu_tasks = []
@@ -463,7 +503,7 @@ class AggregatorService:
                         asyncio.create_task(
                             asyncio.wait_for(
                                 scraper.get_restaurant(
-                                    platform_result.restaurant_id, location
+                                    platform_result.restaurant_id, location, mode
                                 ),
                                 timeout=10.0,
                             )
@@ -479,30 +519,52 @@ class AggregatorService:
         for (r_idx, p_idx), detail in zip(task_info, done):
             if isinstance(detail, Exception) or detail is None:
                 continue
+            target = results[r_idx].platforms[p_idx]
             if detail.menu_items:
-                results[r_idx].platforms[p_idx].menu_items = detail.menu_items
-                # Also update fees if the detail has better data
+                target.menu_items = detail.menu_items
                 if detail.delivery_fee > 0:
-                    results[r_idx].platforms[p_idx].delivery_fee = detail.delivery_fee
+                    target.delivery_fee = detail.delivery_fee
                 if detail.service_fee > 0:
-                    results[r_idx].platforms[p_idx].service_fee = detail.service_fee
+                    target.service_fee = detail.service_fee
+            # Always copy through the rich detail fields when present - even
+            # for platforms where the menu was already populated by the feed.
+            for field in (
+                "minimum_order", "is_open", "accepting_orders",
+                "is_within_delivery_range", "distance_text",
+                "categories", "price_bucket", "address", "phone",
+                "hours_today_text", "closing_soon",
+                "allergen_disclaimer_html", "status_text",
+            ):
+                val = getattr(detail, field, None)
+                if val not in (None, "", [], 0):
+                    setattr(target, field, val)
+            # ETA: replace only if the detail returned a sensible value, and
+            # keep min <= max so the UI never renders "30-10".
+            d_min = getattr(detail, "estimated_delivery_minutes", 0) or 0
+            d_max = getattr(detail, "estimated_delivery_minutes_max", None)
+            if d_min and d_min > 0 and d_min < 999:
+                target.estimated_delivery_minutes = d_min
+                target.estimated_delivery_minutes_max = (
+                    d_max if (d_max and d_max >= d_min) else None
+                )
+            elif d_max and (target.estimated_delivery_minutes or 0) <= d_max:
+                target.estimated_delivery_minutes_max = d_max
 
-    async def get_restaurant(self, name: str, location: str) -> Optional[AggregatedResult]:
+    async def get_restaurant(
+        self, name: str, location: str, mode: str = "delivery"
+    ) -> Optional[AggregatedResult]:
         """Get detailed data for a specific restaurant across all platforms.
 
         1. Search to find the restaurant on each platform
         2. Fetch detailed data (menu items, fees) for each platform
         3. Build cross-platform price comparison
         """
-        # First do a search to find the restaurant IDs
-        search_results = await self.search(name, location)
+        search_results = await self.search(name, location, mode=mode)
         if not search_results:
             return None
 
-        # Find the best match
         target = search_results[0]
 
-        # Fetch detailed data for each platform result (with menu items)
         detail_tasks = []
         for platform_result in target.platforms:
             scraper = self.scrapers.get(platform_result.platform)
@@ -510,7 +572,7 @@ class AggregatorService:
                 detail_tasks.append(
                     asyncio.create_task(
                         asyncio.wait_for(
-                            scraper.get_restaurant(platform_result.restaurant_id, location),
+                            scraper.get_restaurant(platform_result.restaurant_id, location, mode),
                             timeout=12.0,
                         )
                     )
@@ -526,7 +588,7 @@ class AggregatorService:
                 logger.warning(f"[Aggregator] Detail fetch failed: {e}")
 
         if not detailed_platforms:
-            return target  # Return summary if detail fetch fails
+            return target
 
         return _build_aggregated(name, location, detailed_platforms)
 

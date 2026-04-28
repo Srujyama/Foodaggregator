@@ -316,6 +316,53 @@ def _parse_restaurant(restaurant: dict) -> dict:
         first = deals[0] if isinstance(deals[0], dict) else {}
         promo = first.get("description") or first.get("badge_text")
 
+    # Address (the API returns either a structured object or a flat string).
+    address = None
+    addr_obj = restaurant.get("address")
+    if isinstance(addr_obj, dict):
+        parts = [
+            addr_obj.get("street_address") or addr_obj.get("address_1"),
+            addr_obj.get("locality") or addr_obj.get("city"),
+            addr_obj.get("region") or addr_obj.get("state_province") or addr_obj.get("state"),
+            addr_obj.get("zip") or addr_obj.get("postal_code"),
+        ]
+        address = ", ".join(p for p in parts if p)
+        if not address:
+            address = None
+    elif isinstance(addr_obj, str):
+        address = addr_obj
+
+    phone = restaurant.get("phone_number") or restaurant.get("phone") or None
+
+    cuisines_raw = restaurant.get("cuisines") or restaurant.get("cuisine_list") or []
+    categories = []
+    if isinstance(cuisines_raw, list):
+        for c in cuisines_raw[:6]:
+            if isinstance(c, str):
+                categories.append(c)
+            elif isinstance(c, dict):
+                v = c.get("name") or c.get("display_name")
+                if v:
+                    categories.append(v)
+
+    distance_text = None
+    dist = restaurant.get("distance_in_miles") or restaurant.get("distance_miles") or restaurant.get("distance")
+    if dist is not None:
+        try:
+            distance_text = f"{float(dist):.1f} mi"
+        except (TypeError, ValueError):
+            distance_text = None
+
+    is_open = restaurant.get("open") if isinstance(restaurant.get("open"), bool) else None
+    if is_open is None:
+        avail = restaurant.get("availability") or {}
+        if isinstance(avail, dict):
+            v = avail.get("is_open")
+            if isinstance(v, bool):
+                is_open = v
+
+    accepting_orders = is_open
+
     return {
         "name": name,
         "restaurant_id": rest_id,
@@ -328,6 +375,12 @@ def _parse_restaurant(restaurant: dict) -> dict:
         "slug": slug,
         "url": url,
         "minimum_order": minimum_order,
+        "address": address,
+        "phone": phone,
+        "categories": categories,
+        "distance_text": distance_text,
+        "is_open": is_open,
+        "accepting_orders": accepting_orders,
     }
 
 
@@ -562,7 +615,7 @@ def _name_matches_query(name: str, tokens: list[str]) -> bool:
 class GrubhubScraper(BaseScraper):
     PLATFORM_NAME = "grubhub"
 
-    async def search(self, query: str, location: str) -> list[PlatformResult]:
+    async def search(self, query: str, location: str, mode: str = "delivery") -> list[PlatformResult]:
         lat, lng = await geocode(location)
         token = await _get_token()
 
@@ -673,6 +726,12 @@ class GrubhubScraper(BaseScraper):
                     rating_count=rd["rating_count"],
                     promo_text=rd["promo"],
                     fetched_at=now,
+                    address=rd.get("address"),
+                    phone=rd.get("phone"),
+                    categories=rd.get("categories") or [],
+                    distance_text=rd.get("distance_text"),
+                    is_open=rd.get("is_open"),
+                    accepting_orders=rd.get("accepting_orders"),
                 ))
         return parsed
 
@@ -707,10 +766,16 @@ class GrubhubScraper(BaseScraper):
                     rating_count=rd["rating_count"],
                     promo_text=rd["promo"],
                     fetched_at=now,
+                    address=rd.get("address"),
+                    phone=rd.get("phone"),
+                    categories=rd.get("categories") or [],
+                    distance_text=rd.get("distance_text"),
+                    is_open=rd.get("is_open"),
+                    accepting_orders=rd.get("accepting_orders"),
                 ))
         return parsed
 
-    async def get_restaurant(self, restaurant_id: str, location: str) -> Optional[PlatformResult]:
+    async def get_restaurant(self, restaurant_id: str, location: str, mode: str = "delivery") -> Optional[PlatformResult]:
         token = await _get_token()
         if not token:
             return None
@@ -769,6 +834,12 @@ class GrubhubScraper(BaseScraper):
                 rating_count=rd["rating_count"],
                 promo_text=rd["promo"],
                 fetched_at=now,
+                address=rd.get("address"),
+                phone=rd.get("phone"),
+                categories=rd.get("categories") or [],
+                distance_text=rd.get("distance_text"),
+                is_open=rd.get("is_open"),
+                accepting_orders=rd.get("accepting_orders"),
             )
         except Exception as e:
             logger.warning(f"[Grubhub] get_restaurant failed: {e}")

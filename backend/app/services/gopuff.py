@@ -85,7 +85,7 @@ async def _get_session(lat: float, lng: float) -> tuple[dict, dict]:
 class GopuffScraper(BaseScraper):
     PLATFORM_NAME = "gopuff"
 
-    async def search(self, query: str, location: str) -> list[PlatformResult]:
+    async def search(self, query: str, location: str, mode: str = "delivery") -> list[PlatformResult]:
         lat, lng = await geocode(location)
         session_cookies, _ = await _get_session(lat, lng)
         cookie_str = "; ".join(f"{k}={v}" for k, v in session_cookies.items())
@@ -364,7 +364,7 @@ class GopuffScraper(BaseScraper):
 
         return results
 
-    async def get_restaurant(self, restaurant_id: str, location: str) -> Optional[PlatformResult]:
+    async def get_restaurant(self, restaurant_id: str, location: str, mode: str = "delivery") -> Optional[PlatformResult]:
         """Get store details from gopuff."""
         lat, lng = await geocode(location)
         session_cookies, _ = await _get_session(lat, lng)

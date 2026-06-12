@@ -35,8 +35,9 @@ export default function RestaurantResult({ result }) {
     ...result.platforms.map((p) => p.rating || 0).filter(Boolean),
   )
 
-  // Cross-platform consumer info (any platform that has it wins).
-  const categories = pickRichest(result.platforms, 'categories') || []
+  // Cross-platform consumer info (any platform that has it wins). Platforms
+  // repeat category tags ("Tacos · Tacos"), so dedupe for stable keys.
+  const categories = [...new Set(pickRichest(result.platforms, 'categories') || [])]
   const priceBucket = pickRichest(result.platforms, 'price_bucket')
   const distance = pickRichest(result.platforms, 'distance_text')
   const address = pickRichest(result.platforms, 'address')

@@ -85,6 +85,9 @@ class SearchResponse(BaseModel):
     results: List[AggregatedResult]
     total: int
     cached: bool = False
+    # Per-platform scrape outcome: "ok" | "empty" | "timeout" | "error",
+    # keyed by Platform enum value. Empty for legacy cached payloads.
+    platform_status: Dict[str, str] = {}
 
 
 class HealthResponse(BaseModel):

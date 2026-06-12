@@ -53,6 +53,34 @@ export function SkeletonCard() {
   )
 }
 
+export function SkeletonDetail() {
+  return (
+    <div className="animate-pulse">
+      <div className="h-8 bg-gray-200 rounded-lg w-72 mb-2" />
+      <div className="h-4 bg-gray-100 rounded w-44 mb-8" />
+      <div className="bg-white rounded-2xl border border-gray-200 p-5 mb-8">
+        <div className="h-4 bg-gray-200 rounded w-48 mb-4" />
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="flex items-center gap-4 py-3">
+            <div className="w-7 h-7 bg-gray-200 rounded-full shrink-0" />
+            <div className="h-4 bg-gray-100 rounded w-28" />
+            <div className="ml-auto h-4 bg-gray-200 rounded w-14" />
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="h-72 bg-white rounded-2xl border border-gray-200 p-5">
+            <div className="h-5 bg-gray-200 rounded-full w-24 mb-4" />
+            <div className="h-28 bg-gray-100 rounded-xl mb-3" />
+            <div className="h-20 bg-gray-50 rounded-xl" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function SkeletonResults() {
   return (
     <div className="space-y-4">

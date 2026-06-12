@@ -9,6 +9,8 @@ export function SearchProvider({ children }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [mode, setMode] = useState('delivery') // 'delivery' or 'pickup'
+  // {platform_id: 'ok'|'empty'|'timeout'|'error'} from the last search
+  const [platformStatus, setPlatformStatus] = useState({})
 
   const value = {
     query,
@@ -23,6 +25,8 @@ export function SearchProvider({ children }) {
     setError,
     mode,
     setMode,
+    platformStatus,
+    setPlatformStatus,
   }
 
   return <SearchContext.Provider value={value}>{children}</SearchContext.Provider>

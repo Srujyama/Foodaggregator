@@ -1,14 +1,22 @@
 import { useSearchParams, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, Star, MapPin, Clock, UtensilsCrossed, SearchX } from 'lucide-react'
 import PlatformCard from '../components/PlatformCard.jsx'
 import DealRanking from '../components/DealRanking.jsx'
 import MenuComparison from '../components/MenuComparison.jsx'
 import ErrorBanner from '../components/ErrorBanner.jsx'
-import LoadingSpinner from '../components/LoadingSpinner.jsx'
+import { SkeletonDetail } from '../components/LoadingSpinner.jsx'
 import PlatformBadge from '../components/PlatformBadge.jsx'
 import { useRestaurant } from '../hooks/useRestaurant.js'
-import { rankByBestDeal } from '../utils/sorting.js'
+import { rankByBestDeal, getBestRating, isPlatformOpen } from '../utils/sorting.js'
 import { formatPrice, sanitizeHtml } from '../lib/utils.js'
+
+function pickRichest(platforms, key) {
+  for (const p of platforms || []) {
+    const v = p?.[key]
+    if (v && (Array.isArray(v) ? v.length : true)) return v
+  }
+  return null
+}
 
 export default function RestaurantDetail() {
   const { slug } = useParams()
@@ -23,6 +31,14 @@ export default function RestaurantDetail() {
   const allergenHtml = data?.platforms?.find((p) => p.allergen_disclaimer_html)?.allergen_disclaimer_html
   const sanitizedAllergen = allergenHtml ? sanitizeHtml(allergenHtml) : ''
 
+  const bestRating = data ? getBestRating(data) : 0
+  const categories = [...new Set(pickRichest(data?.platforms, 'categories') || [])]
+  const priceBucket = pickRichest(data?.platforms, 'price_bucket')
+  const address = pickRichest(data?.platforms, 'address')
+  const hoursToday = pickRichest(data?.platforms, 'hours_today_text')
+  const allClosed =
+    data?.platforms?.length > 0 && !data.platforms.some(isPlatformOpen)
+
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
       {/* Back button */}
@@ -34,31 +50,91 @@ export default function RestaurantDetail() {
         Back to results
       </Link>
 
-      {loading && <LoadingSpinner />}
+      {loading && <SkeletonDetail />}
       {!loading && error && <ErrorBanner message={error} />}
 
-      {!loading && data && (
+      {/* Restaurant found but with nothing to show */}
+      {!loading && !error && data && !data.platforms?.length && (
+        <div className="flex flex-col items-center py-16 text-center gap-4">
+          <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center">
+            <SearchX className="w-8 h-8 text-gray-400" />
+          </div>
+          <div>
+            <p className="font-bold text-lg text-gray-800">
+              "{data.restaurant_name}" isn't available right now
+            </p>
+            <p className="text-sm text-gray-400 mt-1 max-w-sm">
+              None of the platforms we track list this restaurant near{' '}
+              {location || 'your location'} at the moment.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!loading && data && data.platforms?.length > 0 && (
         <>
           {/* Header */}
-          <div className="mb-8">
-            <h1 className="text-3xl font-black text-gray-900 mb-1">
-              {data.restaurant_name}
-            </h1>
-            {location && <p className="text-gray-400 text-sm">{location}</p>}
-            {data.platforms?.length > 0 && (
-              <p className="text-sm text-gray-500 mt-2">
-                Available on {data.platforms.length} platform{data.platforms.length !== 1 ? 's' : ''}
-                {hasMenuComparison && (
-                  <span className="text-amber-600 ml-2 font-medium">
-                    -- {data.menu_comparison.length} menu item{data.menu_comparison.length !== 1 ? 's' : ''} compared
-                  </span>
-                )}
-              </p>
-            )}
+          <div className="mb-8 animate-rise">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <h1 className="text-3xl font-black text-gray-900">
+                {data.restaurant_name}
+              </h1>
+              {bestRating > 0 && (
+                <span className="flex items-center gap-1 text-sm font-semibold text-gray-700 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-1">
+                  <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                  {bestRating.toFixed(1)}
+                </span>
+              )}
+              {priceBucket && (
+                <span className="text-sm font-semibold text-gray-600 bg-gray-100 border border-gray-200 rounded-full px-2.5 py-1">
+                  {priceBucket}
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-sm text-gray-500">
+              {categories.length > 0 && (
+                <span>{categories.slice(0, 4).join(' · ')}</span>
+              )}
+              {address && (
+                <span className="inline-flex items-center gap-1 text-gray-400">
+                  <MapPin className="w-3.5 h-3.5" /> {address}
+                </span>
+              )}
+              {hoursToday && (
+                <span className="inline-flex items-center gap-1 text-gray-400">
+                  <Clock className="w-3.5 h-3.5" /> {hoursToday}
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 mt-3">
+              {data.platforms.map((p) => (
+                <PlatformBadge key={p.platform} platform={p.platform} />
+              ))}
+              {hasMenuComparison && (
+                <span className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-1">
+                  {data.menu_comparison.length} menu item{data.menu_comparison.length !== 1 ? 's' : ''} compared
+                </span>
+              )}
+            </div>
           </div>
 
+          {/* Everything-closed banner */}
+          {allClosed && (
+            <div className="mb-6 rounded-2xl border border-rose-200 bg-rose-50 p-4 flex items-start gap-3 animate-rise">
+              <AlertTriangle className="w-4 h-4 text-rose-600 mt-0.5 shrink-0" />
+              <div className="text-sm text-rose-800">
+                <p className="font-semibold">Closed on every platform right now</p>
+                <p className="text-rose-600 text-xs mt-0.5">
+                  Fees and menus below are the latest we have — check back during opening hours to order.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Fee comparison ranking (shows both delivery & pickup) */}
-          <div className="mb-8">
+          <div className="mb-8 animate-rise" style={{ animationDelay: '60ms' }}>
             <DealRanking aggregatedResult={data} />
           </div>
 
@@ -66,11 +142,9 @@ export default function RestaurantDetail() {
           <h2 className="font-bold text-gray-800 text-lg mb-4">Full breakdown by platform</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
             {rankByBestDeal(data).map((platform, index) => (
-              <PlatformCard
-                key={platform.platform}
-                platform={platform}
-                isBestDeal={index === 0}
-              />
+              <div key={platform.platform} className="animate-rise" style={{ animationDelay: `${120 + index * 50}ms` }}>
+                <PlatformCard platform={platform} isBestDeal={index === 0} />
+              </div>
             ))}
           </div>
 
@@ -89,7 +163,7 @@ export default function RestaurantDetail() {
           )}
 
           {/* Per-platform full menus */}
-          {hasMenuItems && (
+          {hasMenuItems ? (
             <div className="mb-8">
               <h2 className="font-bold text-gray-800 text-lg mb-4">Full Menus by Platform</h2>
               <div className="space-y-6">
@@ -133,6 +207,16 @@ export default function RestaurantDetail() {
                     </div>
                   ))}
               </div>
+            </div>
+          ) : (
+            <div className="mb-8 rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-10 flex flex-col items-center text-center gap-2">
+              <UtensilsCrossed className="w-8 h-8 text-gray-300" />
+              <p className="font-semibold text-gray-600">Menus unavailable</p>
+              <p className="text-xs text-gray-400 max-w-xs">
+                We couldn't load menu items from any platform this time — fee
+                comparisons above are still accurate. Use the order links to
+                browse the menu directly.
+              </p>
             </div>
           )}
 

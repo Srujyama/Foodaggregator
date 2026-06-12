@@ -8,6 +8,14 @@ import {
   getSavings,
   getMenuSavings,
   getCheapestMenuPlatform,
+  getBestRating,
+  getFastestEta,
+  hasPromo,
+  isOpenNow,
+  sortResults,
+  filterResults,
+  hasActiveFilters,
+  EMPTY_FILTERS,
 } from './sorting.js'
 
 const _platform = (overrides = {}) => ({
@@ -112,6 +120,141 @@ describe('getMenuSavings', () => {
         { price_difference: 1.25 },
       ],
     })).toBeCloseTo(1.75)
+  })
+})
+
+const _agg = (name, platforms, extra = {}) => ({
+  restaurant_name: name,
+  platforms,
+  ...extra,
+})
+
+describe('getBestRating / getFastestEta', () => {
+  it('returns the max rating across platforms, ignoring missing', () => {
+    const agg = _agg('A', [
+      _platform({ rating: 4.2 }),
+      _platform({ rating: null }),
+      _platform({ rating: 4.8 }),
+    ])
+    expect(getBestRating(agg)).toBe(4.8)
+  })
+  it('returns 0 when no platform has a rating', () => {
+    expect(getBestRating(_agg('A', [_platform({ rating: null })]))).toBe(0)
+  })
+  it('returns the fastest ETA for the active mode', () => {
+    const agg = _agg('A', [
+      _platform({ estimated_delivery_minutes: 40, estimated_pickup_minutes: 10 }),
+      _platform({ estimated_delivery_minutes: 25, estimated_pickup_minutes: 20 }),
+    ])
+    expect(getFastestEta(agg, 'delivery')).toBe(25)
+    expect(getFastestEta(agg, 'pickup')).toBe(10)
+  })
+  it('returns Infinity when no ETAs exist (sorts last)', () => {
+    expect(getFastestEta(_agg('A', [_platform({ estimated_delivery_minutes: null })]))).toBe(Infinity)
+  })
+})
+
+describe('hasPromo / isOpenNow', () => {
+  it('detects a promo on any platform', () => {
+    expect(hasPromo(_agg('A', [_platform(), _platform({ promo_text: '20% off' })]))).toBe(true)
+    expect(hasPromo(_agg('A', [_platform()]))).toBe(false)
+  })
+  it('treats unknown open status as open', () => {
+    expect(isOpenNow(_agg('A', [_platform()]))).toBe(true)
+  })
+  it('is closed only when every platform is explicitly closed', () => {
+    expect(isOpenNow(_agg('A', [
+      _platform({ is_open: false }),
+      _platform({ accepting_orders: false }),
+    ]))).toBe(false)
+    expect(isOpenNow(_agg('A', [
+      _platform({ is_open: false }),
+      _platform({ is_open: true }),
+    ]))).toBe(true)
+  })
+})
+
+describe('sortResults', () => {
+  const cheapFast = _agg('CheapFast', [
+    _platform({ delivery_fee: 1, rating: 3.5, estimated_delivery_minutes: 15 }),
+  ])
+  const pricyTopRated = _agg('PricyTopRated', [
+    _platform({ delivery_fee: 8, rating: 4.9, estimated_delivery_minutes: 50 }),
+    _platform({ platform: 'doordash', delivery_fee: 9, estimated_delivery_minutes: 45 }),
+  ])
+  const midSaver = _agg(
+    'MidSaver',
+    [
+      _platform({ delivery_fee: 4, rating: 4.0, estimated_delivery_minutes: 30 }),
+      _platform({ platform: 'grubhub', delivery_fee: 7, estimated_delivery_minutes: 35 }),
+    ],
+    { menu_comparison: [{ price_difference: 2.5 }] },
+  )
+  const results = [pricyTopRated, midSaver, cheapFast]
+
+  it('best keeps the backend order', () => {
+    expect(sortResults(results, 'best').map((r) => r.restaurant_name))
+      .toEqual(['PricyTopRated', 'MidSaver', 'CheapFast'])
+  })
+  it('fees sorts by cheapest best-deal platform', () => {
+    expect(sortResults(results, 'fees').map((r) => r.restaurant_name))
+      .toEqual(['CheapFast', 'MidSaver', 'PricyTopRated'])
+  })
+  it('rating sorts by best rating descending', () => {
+    expect(sortResults(results, 'rating')[0].restaurant_name).toBe('PricyTopRated')
+  })
+  it('eta sorts by fastest option ascending', () => {
+    expect(sortResults(results, 'eta')[0].restaurant_name).toBe('CheapFast')
+  })
+  it('platforms sorts by platform count, stable for ties', () => {
+    const sorted = sortResults(results, 'platforms').map((r) => r.restaurant_name)
+    expect(sorted).toEqual(['PricyTopRated', 'MidSaver', 'CheapFast'])
+  })
+  it('savings combines fee savings and menu savings', () => {
+    // MidSaver: $3 fee spread + $2.50 menu = $5.50; PricyTopRated: $1 fee spread
+    expect(sortResults(results, 'savings')[0].restaurant_name).toBe('MidSaver')
+  })
+  it('does not mutate the input', () => {
+    const copy = [...results]
+    sortResults(results, 'fees')
+    expect(results).toEqual(copy)
+  })
+})
+
+describe('filterResults', () => {
+  const ubered = _agg('OnUber', [_platform({ platform: 'uber_eats' })])
+  const doordashed = _agg('OnDD', [
+    _platform({ platform: 'doordash', promo_text: 'Free delivery' }),
+    _platform({ platform: 'grubhub', is_open: false }),
+  ])
+  const closed = _agg('Closed', [_platform({ platform: 'uber_eats', is_open: false, accepting_orders: false })])
+  const results = [ubered, doordashed, closed]
+
+  it('returns everything when no filters are active', () => {
+    expect(hasActiveFilters(EMPTY_FILTERS)).toBe(false)
+    expect(filterResults(results, EMPTY_FILTERS)).toEqual(results)
+  })
+  it('filters by platform membership', () => {
+    const out = filterResults(results, { ...EMPTY_FILTERS, platforms: ['doordash'] })
+    expect(out.map((r) => r.restaurant_name)).toEqual(['OnDD'])
+  })
+  it('openNow drops fully-closed restaurants only', () => {
+    const out = filterResults(results, { ...EMPTY_FILTERS, openNow: true })
+    expect(out.map((r) => r.restaurant_name)).toEqual(['OnUber', 'OnDD'])
+  })
+  it('promoOnly keeps restaurants with any promo', () => {
+    const out = filterResults(results, { ...EMPTY_FILTERS, promoOnly: true })
+    expect(out.map((r) => r.restaurant_name)).toEqual(['OnDD'])
+  })
+  it('multiOnly keeps cross-platform matches', () => {
+    const out = filterResults(results, { ...EMPTY_FILTERS, multiOnly: true })
+    expect(out.map((r) => r.restaurant_name)).toEqual(['OnDD'])
+  })
+  it('combines filters with AND semantics', () => {
+    const out = filterResults(results, {
+      ...EMPTY_FILTERS, platforms: ['uber_eats'], openNow: true,
+    })
+    expect(out.map((r) => r.restaurant_name)).toEqual(['OnUber'])
   })
 })
 

@@ -35,6 +35,36 @@
     animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   }
 
+  /* Staggered card entrance for result lists */
+  .animate-rise {
+    animation: rise 0.35s cubic-bezier(0.21, 0.61, 0.35, 1) both;
+  }
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-rise {
+      animation: none;
+    }
+  }
+
+  /* Hide scrollbars on horizontally-scrolling chip rows */
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Tabular nums for price alignment */
   .tabular-nums {
     font-variant-numeric: tabular-nums;

@@ -25,6 +25,53 @@ logger = logging.getLogger(__name__)
 FUZZY_THRESHOLD = 78  # minimum score to consider same restaurant
 MENU_ITEM_FUZZY_THRESHOLD = 82  # minimum score to consider same menu item
 
+# When a fuzzy match groups genuinely different items (e.g. a "Large Side of
+# Queso" on one platform vs a single "Queso" on another, or a catering bundle
+# vs a single serving), the prices diverge by a multiple rather than the small
+# per-platform markup we actually want to surface. These guards reject those.
+OUTLIER_PRICE_RATIO = 2.0   # a price >= this * median is treated as a mismatch
+PAIR_MAX_PRICE_RATIO = 2.5  # for 2-platform rows, drop the row above this ratio
+
+
+def _reject_price_outliers(
+    available: dict[str, float],
+) -> tuple[dict[str, float], bool]:
+    """Drop platform prices that are implausible outliers for the same item.
+
+    Returns (cleaned_prices, ok). `ok` is False when the row should be dropped
+    entirely (a 2-platform row whose prices differ by more than PAIR_MAX_PRICE_RATIO
+    — we can't tell which side is the mismatch, and a 2.5x gap is virtually never
+    the same item priced differently).
+
+    With 3+ platforms we keep the consensus (the median) and drop any single
+    price that sits at/above OUTLIER_PRICE_RATIO of the median, which is almost
+    always a fuzzy mis-match rather than a real cross-platform markup.
+    """
+    if len(available) < 2:
+        return available, True
+
+    vals = sorted(available.values())
+    lo, hi = vals[0], vals[-1]
+    if lo <= 0:
+        return available, True
+
+    if len(available) == 2:
+        return available, (hi / lo) < PAIR_MAX_PRICE_RATIO
+
+    # 3+ platforms: keep prices within OUTLIER_PRICE_RATIO of the median.
+    mid = vals[len(vals) // 2]
+    if mid <= 0:
+        return available, True
+    cleaned = {
+        plat: price
+        for plat, price in available.items()
+        if price < mid * OUTLIER_PRICE_RATIO
+    }
+    # Don't let the guard collapse a row below the 2-platform minimum.
+    if len(cleaned) < 2:
+        return available, True
+    return cleaned, True
+
 
 def _compute_total_cost(p: PlatformResult) -> float:
     return p.delivery_fee + p.service_fee
@@ -88,7 +135,7 @@ _NON_RESTAURANT_KEYWORDS = {
     "bodega", "smoke & beer", "news stand", "newsstand",
     # National grocery / supermarket chains commonly on UE/Postmates
     "royal farms", "redner", "acme markets", "acme market",
-    "giant food", "food lion", "stop & shop", "shoprite",
+    "giant food", "giant heirloom", "giant (", "food lion", "stop & shop", "shoprite",
     "shop rite", "harris teeter", "publix", "kroger",
     "vons", "ralphs", "albertsons", "ralph's", "save mart",
     "food 4 less", "winn-dixie", "winn dixie", "hannaford",
@@ -99,6 +146,19 @@ _NON_RESTAURANT_KEYWORDS = {
     "movie theatre", "movie theater",
     # Flowers / gifts / tobacco
     "bouquet", "flower bar",
+    # Sporting goods / apparel / general retail (seen on UberEats feeds)
+    "sporting goods", "dick's", "dicks sporting", "academy sports",
+    "big 5 sporting", "modell's",
+    # Beauty / cosmetics / personal care
+    "ulta beauty", "ulta ", "sephora", "sally beauty", "bath & body works",
+    "vitamin shoppe", "gnc", "the body shop",
+    # Beverage / market / butcher shops
+    "beverage", "wild fork", "butcher", "meat & seafood", "meat and seafood",
+    "seafood market", "fish market",
+    # Office / electronics / misc big-box not already covered
+    "petsmart", "petco", "michaels stores", "guitar center", "game stop",
+    "gamestop", "barnes & noble", "tj maxx", "marshalls", "homegoods",
+    "at home", "container store", "world market",
 }
 
 
@@ -106,6 +166,36 @@ def _is_likely_non_restaurant(name: str) -> bool:
     """Filter out convenience stores, pet shops, groceries, etc."""
     lower = name.lower()
     return any(kw in lower for kw in _NON_RESTAURANT_KEYWORDS)
+
+
+# Keywords marking a category tag as retail/essentials rather than cuisine.
+# Substring-matched because platforms spell these dozens of ways
+# ("Convenience", "Convenience Store with Alcohol", "Liquor Stores", ...).
+# A real restaurant always carries at least one cuisine category; a listing
+# whose categories ALL hit this list (e.g. "Power Market" = Convenience ·
+# Alcohol · Beauty Supply · Retail · Personal Care · Hardware · Pharmacy)
+# is a store the name-keyword filter missed.
+_NON_FOOD_CATEGORY_KEYWORDS = (
+    "convenience", "grocer", "supermarket", "alcohol", "liquor", "beer",
+    "wine", "spirits", "retail", "pharmacy", "drugstore", "smoke", "tobacco",
+    "vape", "gas station", "pet suppl", "electronics", "home goods",
+    "flower", "floral", "essentials", "beauty", "personal care", "hardware",
+    "household", "office suppl", "school suppl", "baby", "cleaning",
+    "paper goods", "party suppl", "garden", "auto part", "toys",
+    "health & wellness", "vitamin", "supplement", "adult", "drinks",
+)
+
+
+def _is_non_food_category(category: str) -> bool:
+    c = category.strip().lower()
+    return any(kw in c for kw in _NON_FOOD_CATEGORY_KEYWORDS)
+
+
+def _has_only_non_food_categories(categories: list[str]) -> bool:
+    """True when a listing's categories are non-empty and entirely retail tags."""
+    if not categories:
+        return False
+    return all(_is_non_food_category(c) for c in categories)
 
 
 def _normalize_name(name: str) -> str:
@@ -297,6 +387,17 @@ def _build_menu_comparison(platforms: list[PlatformResult]) -> list[MenuItemComp
         if not available_prices:
             continue
 
+        # Reject mismatched items (different size/bundle that fuzzy-matched)
+        # so the comparison and the markup numbers stay trustworthy.
+        available_prices, ok = _reject_price_outliers(available_prices)
+        if not ok or len(available_prices) < 2:
+            continue
+        # Re-null any platform whose price we dropped as an outlier.
+        prices = {
+            plat: (available_prices.get(plat) if plat in prices else None)
+            for plat in prices
+        }
+
         cheapest = min(available_prices, key=available_prices.get)
         price_vals = list(available_prices.values())
         diff = round(max(price_vals) - min(price_vals), 2)
@@ -410,8 +511,14 @@ class AggregatorService:
         location: str,
         timeout: float = 20.0,
         mode: str = "delivery",
-    ) -> list[AggregatedResult]:
-        """Fan out to all scrapers concurrently, merge results, rank by best deal."""
+        with_status: bool = False,
+    ) -> list[AggregatedResult] | tuple[list[AggregatedResult], dict[str, str]]:
+        """Fan out to all scrapers concurrently, merge results, rank by best deal.
+
+        With with_status=True, returns (results, platform_status) where
+        platform_status maps each attempted platform's enum value to
+        "ok" / "empty" / "timeout" / "error".
+        """
         tasks = {
             platform: asyncio.create_task(
                 asyncio.wait_for(scraper._safe_search(query, location, mode), timeout=timeout)
@@ -420,19 +527,29 @@ class AggregatorService:
         }
 
         results_by_platform: dict[Platform, list[PlatformResult]] = {}
+        # Note: scrapers' _safe_search swallows most internal errors into [],
+        # so those platforms read as "empty" rather than "error" — an accepted
+        # approximation. Only timeouts of the whole scrape and exceptions that
+        # escape _safe_search are distinguishable here.
+        platform_status: dict[str, str] = {}
         for platform, task in tasks.items():
             try:
-                results_by_platform[platform] = await task
+                platform_results = await task
+                results_by_platform[platform] = platform_results
+                platform_status[platform.value] = "ok" if platform_results else "empty"
             except asyncio.TimeoutError:
                 logger.warning(f"[Aggregator] {platform.value} timed out")
                 results_by_platform[platform] = []
+                platform_status[platform.value] = "timeout"
             except Exception as e:
                 logger.warning(f"[Aggregator] {platform.value} failed: {e}")
                 results_by_platform[platform] = []
+                platform_status[platform.value] = "error"
 
         all_results = [
             r for results in results_by_platform.values() for r in results
             if not _is_likely_non_restaurant(r.restaurant_name)
+            and not _has_only_non_food_categories(r.categories)
         ]
 
         # Postmates and UberEats share one Uber backend - any time a store comes
@@ -442,7 +559,7 @@ class AggregatorService:
         all_results = _dedupe_postmates_ubereats(all_results)
 
         if not all_results:
-            return []
+            return ([], platform_status) if with_status else []
 
         groups = _fuzzy_group(all_results)
 
@@ -484,7 +601,19 @@ class AggregatorService:
                 agg_result.platforms, agg_result.menu_comparison
             )
 
-        return aggregated
+        # Feed results often omit categories, so the retail filter above can't
+        # judge them; enrichment fills categories in from the store detail.
+        # Re-apply the check now that we know what each listing really is
+        # (e.g. "Power Market" = Convenience/Alcohol/Retail/Pharmacy).
+        def _group_is_retail(a: AggregatedResult) -> bool:
+            with_cats = [p for p in a.platforms if p.categories]
+            return bool(with_cats) and all(
+                _has_only_non_food_categories(p.categories) for p in with_cats
+            )
+
+        aggregated = [a for a in aggregated if not _group_is_retail(a)]
+
+        return (aggregated, platform_status) if with_status else aggregated
 
     async def _enrich_menus(
         self, results: list[AggregatedResult], location: str, mode: str = "delivery"

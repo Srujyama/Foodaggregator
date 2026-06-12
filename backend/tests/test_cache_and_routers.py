@@ -69,6 +69,89 @@ async def test_memory_cache_round_trip_separates_modes():
     assert p == [{"x": 2}]
 
 
+# ---------- in-flight request coalescing ----------
+
+
+@pytest.mark.asyncio
+async def test_coalesce_shares_one_factory_run():
+    import asyncio
+
+    calls = 0
+
+    async def slow_factory():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return {"data": calls}
+
+    results = await asyncio.gather(
+        cache_module.coalesce("k1", slow_factory),
+        cache_module.coalesce("k1", slow_factory),
+        cache_module.coalesce("k1", slow_factory),
+    )
+    assert calls == 1
+    assert all(r == {"data": 1} for r in results)
+    # All waiters got the SAME object — callers must copy before mutating.
+    assert results[0] is results[1]
+
+
+@pytest.mark.asyncio
+async def test_coalesce_different_keys_run_separately():
+    import asyncio
+
+    calls = []
+
+    def make_factory(tag):
+        async def factory():
+            calls.append(tag)
+            await asyncio.sleep(0.01)
+            return tag
+        return factory
+
+    a, b = await asyncio.gather(
+        cache_module.coalesce("key-a", make_factory("a")),
+        cache_module.coalesce("key-b", make_factory("b")),
+    )
+    assert (a, b) == ("a", "b")
+    assert sorted(calls) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_coalesce_failure_propagates_then_retries_fresh():
+    import asyncio
+
+    attempts = 0
+
+    async def flaky():
+        nonlocal attempts
+        attempts += 1
+        await asyncio.sleep(0.01)
+        if attempts == 1:
+            raise RuntimeError("scrape blew up")
+        return "ok"
+
+    waiters = await asyncio.gather(
+        cache_module.coalesce("flaky-key", flaky),
+        cache_module.coalesce("flaky-key", flaky),
+        return_exceptions=True,
+    )
+    assert all(isinstance(w, RuntimeError) for w in waiters)
+    # The failed task must not be sticky: the next call retries.
+    assert await cache_module.coalesce("flaky-key", flaky) == "ok"
+    assert attempts == 2
+
+
+def test_search_filter_does_not_corrupt_shared_results(client):
+    """Coalesced waiters share result objects; a platform-filtered request
+    must not strip platforms from what other requests (or the cache) see."""
+    c, _ = client
+    first = c.get("/api/search?q=x&location=y&platforms=doordash").json()
+    assert [p["platform"] for p in first["results"][0]["platforms"]] == ["doordash"]
+    # Same search again (cache hit) must still have all three platforms.
+    second = c.get("/api/search?q=x&location=y").json()
+    assert len(second["results"][0]["platforms"]) == 3
+
+
 # ---------- search router ----------
 
 
@@ -80,17 +163,21 @@ def client(monkeypatch):
 
     captured = {}
 
-    async def fake_search(self, q, location, timeout=20.0, mode="delivery"):
+    async def fake_search(self, q, location, timeout=20.0, mode="delivery", with_status=False):
         captured["mode"] = mode
         captured["query"] = q
         captured["location"] = location
-        return [
+        results = [
             _agg([
                 _platform(Platform.UBER_EATS, df=2.99, sf=1.0, rid="ue"),
                 _platform(Platform.DOORDASH, df=0.99, sf=0.5, rid="dd"),
                 _platform(Platform.GRUBHUB, df=4.99, sf=0.0, rid="gh"),
             ])
         ]
+        if with_status:
+            status = {"uber_eats": "ok", "doordash": "ok", "grubhub": "ok"}
+            return results, status
+        return results
 
     async def fake_get_restaurant(self, name, location, mode="delivery"):
         captured["detail_mode"] = mode

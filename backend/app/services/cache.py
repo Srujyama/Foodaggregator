@@ -1,13 +1,15 @@
+import asyncio
 import hashlib
 import logging
 import time
-from typing import Optional, Any
+from typing import Awaitable, Callable, Optional, Any
 
 from app.services.firebase_admin import get_db
 
 logger = logging.getLogger(__name__)
 
 _memory_cache: dict[str, tuple[Any, float]] = {}
+_inflight: dict[str, asyncio.Task] = {}
 
 MEMORY_TTL = 300      # 5 minutes
 FIRESTORE_TTL = 1800  # 30 minutes
@@ -85,6 +87,34 @@ async def set_cached(query: str, location: str, data: Any, mode: str = "delivery
     key = _make_key(query, location, mode)
     set_in_memory(key, data)
     await set_in_firestore(key, data)
+
+
+async def coalesce(key: str, factory: Callable[[], Awaitable[Any]]) -> Any:
+    """Share one in-flight `factory()` run across concurrent callers.
+
+    A full scrape fans out to every platform and takes seconds; without this,
+    N users searching the same thing during a cache miss trigger N identical
+    scrapes (and N times the block/rate-limit exposure). The first caller
+    becomes the leader and runs `factory()`; everyone else awaits the same
+    task and gets the same return value.
+
+    Failures propagate to every waiter, and the key is cleared on completion
+    so the next request after a failure retries fresh. A waiter being
+    cancelled (client disconnect) does not cancel the shared task.
+
+    Callers MUST NOT mutate the returned value — it is shared. Copy first.
+    """
+    task = _inflight.get(key)
+    if task is None or task.done():
+        task = asyncio.create_task(factory())
+        _inflight[key] = task
+
+        def _cleanup(t, k=key):
+            if _inflight.get(k) is t:
+                _inflight.pop(k, None)
+
+        task.add_done_callback(_cleanup)
+    return await asyncio.shield(task)
 
 
 async def track_popular_search(query: str) -> None:

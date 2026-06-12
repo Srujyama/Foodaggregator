@@ -234,16 +234,43 @@ def _money_value(obj) -> float:
         return 0.0
 
 
+def _normalize_phone(obj) -> Optional[str]:
+    """Coerce a Grubhub phone field into a display string.
+
+    Grubhub returns phone in two shapes depending on endpoint:
+      * a bare string: "3024549938"
+      * a dict: {"country_code": "1", "phone_number": "3024549938"}
+    Returns None when no usable number is present so the model's
+    Optional[str] stays valid (a dict here previously crashed validation).
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return obj.strip() or None
+    if isinstance(obj, dict):
+        number = obj.get("phone_number") or obj.get("number") or obj.get("phone")
+        if not number:
+            return None
+        number = str(number).strip()
+        cc = str(obj.get("country_code") or "").strip()
+        if cc and not number.startswith("+") and not number.startswith(cc):
+            return f"+{cc} {number}"
+        return number or None
+    return None
+
+
 def _parse_restaurant(restaurant: dict) -> dict:
     """Parse a restaurant dict from the Grubhub API."""
     name = restaurant.get("name", "")
     rest_id = str(restaurant.get("restaurant_id", ""))
 
     # Grubhub's top-level delivery_fee carries the *displayed* price (after
-    # any Grubhub+/promo subsidy) in whole dollars. That's what the user pays
-    # and what we want to show. Example:
-    #   {"price": 0, "currency": "USD"}  — GH+ free delivery
-    #   {"price": 3, "currency": "USD"}  — restaurant charges $3
+    # any Grubhub+/promo subsidy) in CENTS. That's what the user pays and what
+    # we want to show. Example:
+    #   {"price": 0,   "currency": "USD"}  — GH+ free delivery
+    #   {"price": 300, "currency": "USD"}  — restaurant charges $3.00
+    # (Verified live: every value is a multiple of 100 and reads as cents;
+    # treating it as whole dollars produced a "$300 delivery fee" bug.)
     # price_response.delivery_response.delivery_fee.flat_cents is the underlying
     # restaurant fee, which attribution=GRUBHUB overrides to free. We prefer
     # the displayed price but fall back to the flat_cents when the top-level
@@ -257,7 +284,7 @@ def _parse_restaurant(restaurant: dict) -> dict:
 
     if isinstance(top_df, dict) and "price" in top_df:
         try:
-            delivery_fee = round(float(top_df["price"]), 2)
+            delivery_fee = round(float(top_df["price"]) / 100, 2)
         except (ValueError, TypeError):
             delivery_fee = 0.0
     elif top_df is not None:
@@ -307,8 +334,17 @@ def _parse_restaurant(restaurant: dict) -> dict:
     slug = restaurant.get("restaurant_slug", rest_id)
     url = f"https://www.grubhub.com/restaurant/{slug}" if slug else f"https://www.grubhub.com/restaurant/{rest_id}"
 
+    # delivery_minimum / minimum_order_amount use the same cents-based
+    # {"price": <cents>} shape as delivery_fee in search results, so a "price"
+    # key here is cents (e.g. 2000 = $20 minimum), not dollars.
     min_obj = restaurant.get("minimum_order_amount") or restaurant.get("delivery_minimum")
-    minimum_order = _money_value(min_obj) or None
+    if isinstance(min_obj, dict) and "price" in min_obj and "amount" not in min_obj:
+        try:
+            minimum_order = round(float(min_obj["price"]) / 100, 2) or None
+        except (ValueError, TypeError):
+            minimum_order = None
+    else:
+        minimum_order = _money_value(min_obj) or None
 
     promo = None
     deals = restaurant.get("deals", [])
@@ -332,7 +368,9 @@ def _parse_restaurant(restaurant: dict) -> dict:
     elif isinstance(addr_obj, str):
         address = addr_obj
 
-    phone = restaurant.get("phone_number") or restaurant.get("phone") or None
+    phone = _normalize_phone(
+        restaurant.get("phone_number") or restaurant.get("phone")
+    )
 
     cuisines_raw = restaurant.get("cuisines") or restaurant.get("cuisine_list") or []
     categories = []
@@ -607,9 +645,12 @@ def _name_matches_query(name: str, tokens: list[str]) -> bool:
     if not tokens:
         return True
     lname = name.lower()
+    # Tokens are alpha-only, but names keep punctuation — "mcdonalds" must
+    # match "McDonald's" — so also check a letters-only view of the name.
+    lalpha = re.sub(r"[^a-z]+", "", lname)
     # All non-common tokens must appear (substring match handles "Taco Bell
     # Cantina", "Taco Bell Express", etc.).
-    return all(t in lname for t in tokens)
+    return all(t in lname or t in lalpha for t in tokens)
 
 
 class GrubhubScraper(BaseScraper):

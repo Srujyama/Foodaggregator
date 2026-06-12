@@ -9,6 +9,7 @@ Store data is embedded in <script>self.__next_f.push([1,"..."])</script> tags.
 import base64
 import json
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -23,6 +24,26 @@ from app.services.scraper_base import BaseScraper, geocode
 logger = logging.getLogger(__name__)
 
 DD_SEARCH_URL = "https://www.doordash.com/search/store/{query}/"
+
+# Stores farther than this from the requested location are almost certainly
+# IP-geo fallback noise (DoorDash returns the *server's* nearby stores when our
+# address bind is rate-limited). Showing a Berkeley search filled with stores
+# 2,500 mi away is worse than showing none, so we drop them. ~75 mi comfortably
+# covers a metro area plus its suburbs without cutting legitimate results.
+MAX_STORE_DISTANCE_MILES = 75.0
+
+
+def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance between two lat/lng points, in miles."""
+    r = 3958.8  # Earth radius in miles
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lng2 - lng1)
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    )
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
 
 
 def _build_location_cookie(lat: float, lng: float, address: str = "") -> str:
@@ -633,13 +654,35 @@ class DoorDashScraper(BaseScraper):
                     except ValueError:
                         pass
 
-            def _dist_sq(s):
+            def _dist_miles(s) -> float:
                 c = store_coords.get(s.get("store_id"))
                 if c is None:
                     return float("inf")
-                return (c[0] - lat) ** 2 + (c[1] - lng) ** 2
+                return _haversine_miles(lat, lng, c[0], c[1])
 
-            stores.sort(key=_dist_sq)
+            stores.sort(key=_dist_miles)
+
+            # Drop stores that are implausibly far from the requested location.
+            # When our address bind is rate-limited, DoorDash serves stores near
+            # the server's IP instead; surfacing those as local results is the
+            # single biggest source of "wrong restaurants" in the app. We only
+            # filter when we actually have coordinates to judge by — if DoorDash
+            # omitted coords entirely we keep the stores rather than blank out.
+            located = [s for s in stores if store_coords.get(s.get("store_id"))]
+            if located:
+                near = [s for s in located if _dist_miles(s) <= MAX_STORE_DISTANCE_MILES]
+                dropped = len(located) - len(near)
+                if dropped:
+                    nearest = _dist_miles(located[0]) if located else float("inf")
+                    logger.warning(
+                        f"[DoorDash] Dropped {dropped}/{len(located)} stores for "
+                        f"'{query}' beyond {MAX_STORE_DISTANCE_MILES:.0f}mi of "
+                        f"({lat:.3f},{lng:.3f}) — likely IP-geo fallback "
+                        f"(nearest was {nearest:.0f}mi). Address bind probably failed."
+                    )
+                # Stores without coords ride along behind the located ones.
+                no_coords = [s for s in stores if not store_coords.get(s.get("store_id"))]
+                stores = near + no_coords
 
             results = self._build_results(stores)
             logger.info(f"[DoorDash] {len(results)} results for '{query}' near ({lat:.3f},{lng:.3f})")

@@ -1,5 +1,16 @@
 import { getApiUrl } from './utils.js'
 
+// getApiUrl() returns '' in local dev (requests go through the Vite proxy as
+// same-origin relative paths). `new URL('/api/search')` throws without a base,
+// so anchor relative paths to the page origin.
+function apiUrl(path) {
+  const base = getApiUrl()
+  if (base) return new URL(`${base}${path}`)
+  const origin =
+    typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+  return new URL(path, origin)
+}
+
 class ApiError extends Error {
   constructor(message, status) {
     super(message)
@@ -38,7 +49,7 @@ async function fetchWithRetry(url, options = {}) {
 }
 
 export async function searchRestaurants(query, location, params = {}) {
-  const url = new URL(`${getApiUrl()}/api/search`)
+  const url = apiUrl('/api/search')
   url.searchParams.set('q', query)
   url.searchParams.set('location', location)
   if (params.limit) url.searchParams.set('limit', params.limit)
@@ -48,13 +59,13 @@ export async function searchRestaurants(query, location, params = {}) {
 }
 
 export async function getRestaurant(name, location) {
-  const url = new URL(`${getApiUrl()}/api/restaurant/${encodeURIComponent(name)}`)
+  const url = apiUrl(`/api/restaurant/${encodeURIComponent(name)}`)
   url.searchParams.set('location', location)
   return fetchWithRetry(url.toString())
 }
 
 export async function getDeals(location, limit = 10) {
-  const url = new URL(`${getApiUrl()}/api/deals`)
+  const url = apiUrl('/api/deals')
   url.searchParams.set('location', location)
   url.searchParams.set('limit', limit)
   return fetchWithRetry(url.toString())

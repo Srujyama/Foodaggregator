@@ -4,19 +4,26 @@ export function cn(...inputs) {
   return clsx(inputs)
 }
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1'])
+
 export function getApiUrl() {
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL
-  // In production (Vercel), use the Fly.io backend
-  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
+  // Local dev (any loopback host) uses the Vite proxy. Using a strict
+  // `!== 'localhost'` check sent 127.0.0.1 dev sessions to the production
+  // Fly backend, which fails with CORS/503 against a local frontend.
+  if (typeof window !== 'undefined' && !LOCAL_HOSTS.has(window.location.hostname)) {
     return 'https://foodaggregator-api.fly.dev'
   }
-  // Local dev uses the Vite proxy
   return ''
 }
 
 export function formatPrice(dollars) {
-  if (dollars === 0) return 'Free'
-  return `$${Number(dollars).toFixed(2)}`
+  const n = Number(dollars)
+  // Missing/garbage values must never render as "$NaN". Show an em dash so the
+  // UI reads as "no data" rather than a bogus price.
+  if (dollars == null || !Number.isFinite(n)) return '—'
+  if (n === 0) return 'Free'
+  return `$${n.toFixed(2)}`
 }
 
 export function formatETA(minutes) {

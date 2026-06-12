@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
-import { Search, MapPin, Loader2, Car, Bike } from 'lucide-react'
+import { Search, MapPin, Loader2, Car, Bike, LocateFixed, History } from 'lucide-react'
+import toast from 'react-hot-toast'
 import { useSearch } from '../hooks/useSearch.js'
 import { useSearchContext } from '../context/SearchContext.jsx'
+import { getRecentSearches } from '../lib/recentSearches.js'
+import { getCurrentLocationLabel } from '../lib/geolocate.js'
 import { cn } from '../lib/utils.js'
 
 export default function SearchBar({ large = false, initialQuery = '', initialLocation = '' }) {
@@ -9,7 +12,12 @@ export default function SearchBar({ large = false, initialQuery = '', initialLoc
   const { search, setQuery, setLocation, setMode } = useSearch()
   const [localQuery, setLocalQuery] = useState(initialQuery)
   const [localLocation, setLocalLocation] = useState(initialLocation)
+  const [locating, setLocating] = useState(false)
+  const [recents, setRecents] = useState([])
+  const [showRecents, setShowRecents] = useState(false)
   const debounceRef = useRef(null)
+  const blurTimeoutRef = useRef(null)
+  const recentsRef = useRef(null)
 
   useEffect(() => {
     setLocalQuery(initialQuery)
@@ -37,6 +45,39 @@ export default function SearchBar({ large = false, initialQuery = '', initialLoc
 
   const toggleMode = (newMode) => {
     setMode(newMode)
+  }
+
+  const handleUseMyLocation = async () => {
+    setLocating(true)
+    try {
+      const label = await getCurrentLocationLabel()
+      setLocalLocation(label)
+      setLocation(label)
+    } catch {
+      toast.error("Couldn't get your location")
+    } finally {
+      setLocating(false)
+    }
+  }
+
+  const handleQueryFocus = () => {
+    clearTimeout(blurTimeoutRef.current)
+    setRecents(getRecentSearches())
+    setShowRecents(true)
+  }
+
+  const handleQueryBlur = () => {
+    blurTimeoutRef.current = setTimeout(() => setShowRecents(false), 120)
+  }
+
+  const handleRecentSelect = (recent) => {
+    clearTimeout(blurTimeoutRef.current)
+    setShowRecents(false)
+    setLocalQuery(recent.q)
+    setLocalLocation(recent.location)
+    setQuery(recent.q)
+    setLocation(recent.location)
+    search(recent.q, recent.location, recent.mode)
   }
 
   return (
@@ -74,7 +115,7 @@ export default function SearchBar({ large = false, initialQuery = '', initialLoc
       </div>
 
       {/* Search Form */}
-      <form onSubmit={handleSubmit} className="w-full">
+      <form onSubmit={handleSubmit} className="relative w-full">
         <div
           className={cn(
             'flex flex-col sm:flex-row border-2 rounded-2xl overflow-hidden bg-white transition-all duration-200',
@@ -91,6 +132,15 @@ export default function SearchBar({ large = false, initialQuery = '', initialLoc
               placeholder={large ? 'Search restaurants or dishes...' : 'Restaurant or dish'}
               value={localQuery}
               onChange={(e) => handleQueryChange(e.target.value)}
+              onFocus={handleQueryFocus}
+              onBlur={handleQueryBlur}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setShowRecents(false)
+                if (e.key === 'ArrowDown' && showRecents) {
+                  e.preventDefault()
+                  recentsRef.current?.querySelector('button')?.focus()
+                }
+              }}
               className={cn(
                 'w-full bg-transparent outline-none text-gray-900 placeholder-gray-400',
                 large ? 'text-base py-3.5 px-2' : 'text-sm py-2.5 px-2',
@@ -117,6 +167,19 @@ export default function SearchBar({ large = false, initialQuery = '', initialLoc
               )}
               required
             />
+            <button
+              type="button"
+              onClick={handleUseMyLocation}
+              disabled={locating}
+              aria-label="Use my location"
+              className="shrink-0 mr-2 p-1.5 rounded-lg text-gray-400 hover:text-orange-500 hover:bg-orange-50 transition-colors duration-200"
+            >
+              {locating ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <LocateFixed className="w-4 h-4" />
+              )}
+            </button>
           </div>
 
           {/* Submit button */}
@@ -138,6 +201,37 @@ export default function SearchBar({ large = false, initialQuery = '', initialLoc
             )}
           </button>
         </div>
+
+        {/* Recent searches dropdown (sibling of the overflow-hidden box so it isn't clipped) */}
+        {showRecents && !loading && recents.length > 0 && (
+          <div
+            ref={recentsRef}
+            aria-label="Recent searches"
+            className="absolute left-0 right-0 top-full mt-2 bg-white rounded-xl border border-gray-200 shadow-lg z-20 overflow-hidden py-1"
+          >
+            {recents.slice(0, 5).map((recent) => (
+              <button
+                key={`${recent.q}|${recent.location}`}
+                type="button"
+                // preventDefault keeps the input from blurring on mouse press;
+                // selection happens on click so keyboard Enter works too.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleRecentSelect(recent)}
+                onFocus={() => clearTimeout(blurTimeoutRef.current)}
+                onBlur={handleQueryBlur}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setShowRecents(false)
+                }}
+                className="flex items-center gap-2.5 w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-orange-50 focus:bg-orange-50 transition-colors duration-150"
+              >
+                <History className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                <span className="truncate">
+                  {recent.q} <span className="text-gray-400">· {recent.location}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </form>
     </div>
   )

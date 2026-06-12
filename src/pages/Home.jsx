@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { TrendingUp, Zap, DollarSign, Clock, ArrowRight, ShieldCheck, Car, Tag, ExternalLink } from 'lucide-react'
+import { TrendingUp, Zap, DollarSign, Clock, ArrowRight, ShieldCheck, Car, Tag, ExternalLink, History } from 'lucide-react'
 import SearchBar from '../components/SearchBar.jsx'
 import { getPopularSearches } from '../lib/firebase/firestore.js'
 import { getDeals } from '../lib/api.js'
+import { getRecentSearches, clearRecentSearches } from '../lib/recentSearches.js'
 import { useSearch } from '../hooks/useSearch.js'
 import { formatPrice, formatETA } from '../lib/utils.js'
 import PlatformBadge from '../components/PlatformBadge.jsx'
@@ -84,6 +85,7 @@ export default function Home() {
   const [popular, setPopular] = useState(POPULAR_FALLBACK)
   const [deals, setDeals] = useState([])
   const [dealsLocation, setDealsLocation] = useState('')
+  const [recents, setRecents] = useState(() => getRecentSearches())
   const { search, setQuery } = useSearch()
 
   useEffect(() => {
@@ -105,6 +107,11 @@ export default function Home() {
 
   const handlePopularClick = (term) => {
     setQuery(term)
+  }
+
+  const handleClearRecents = () => {
+    clearRecentSearches()
+    setRecents([])
   }
 
   return (
@@ -134,6 +141,31 @@ export default function Home() {
           </p>
 
           <SearchBar large />
+
+          {/* Recent searches */}
+          {recents.length > 0 && (
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+              <span className="flex items-center gap-1.5 text-orange-200 text-sm mr-1">
+                <History className="w-4 h-4" />
+                Recent:
+              </span>
+              {recents.slice(0, 5).map((recent) => (
+                <button
+                  key={`${recent.q}|${recent.location}`}
+                  onClick={() => search(recent.q, recent.location, recent.mode)}
+                  className="px-3.5 py-1.5 rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-sm text-white text-xs font-medium transition-all duration-200 hover:scale-105"
+                >
+                  {recent.q} in {recent.location}
+                </button>
+              ))}
+              <button
+                onClick={handleClearRecents}
+                className="ml-1 text-orange-200 hover:text-white text-xs font-medium underline-offset-2 hover:underline transition-colors duration-200"
+              >
+                Clear
+              </button>
+            </div>
+          )}
 
           {/* Popular searches */}
           <div className="mt-8 flex flex-wrap justify-center gap-2">

@@ -9,6 +9,16 @@ describe('formatPrice', () => {
     expect(formatPrice(2.5)).toBe('$2.50')
     expect(formatPrice(2.999)).toBe('$3.00')
   })
+  it('renders an em dash instead of $NaN for missing/garbage values', () => {
+    expect(formatPrice(null)).toBe('—')
+    expect(formatPrice(undefined)).toBe('—')
+    expect(formatPrice(NaN)).toBe('—')
+    expect(formatPrice('not a number')).toBe('—')
+    expect(formatPrice(Infinity)).toBe('—')
+  })
+  it('still formats numeric strings', () => {
+    expect(formatPrice('3.5')).toBe('$3.50')
+  })
 })
 
 describe('formatETA', () => {

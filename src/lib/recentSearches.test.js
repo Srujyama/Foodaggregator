@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { getRecentSearches, addRecentSearch, clearRecentSearches } from './recentSearches.js'
+import {
+  getRecentSearches, addRecentSearch, clearRecentSearches,
+  getLastLocation, setLastLocation,
+} from './recentSearches.js'
 
 const KEY = 'fa.recentSearches'
+const LOC_KEY = 'fa.lastLocation'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -87,6 +91,51 @@ describe('addRecentSearch', () => {
       throw new Error('quota exceeded')
     })
     expect(() => addRecentSearch({ q: 'pizza', location: 'NYC', mode: 'delivery' })).not.toThrow()
+  })
+})
+
+describe('lastLocation', () => {
+  it('returns "" when nothing is stored', () => {
+    expect(getLastLocation()).toBe('')
+  })
+
+  it('round-trips a location, trimming whitespace', () => {
+    setLastLocation('  Berkeley, CA  ')
+    expect(getLastLocation()).toBe('Berkeley, CA')
+  })
+
+  it('ignores blank or whitespace-only values', () => {
+    setLastLocation('NYC')
+    setLastLocation('   ')
+    setLastLocation('')
+    expect(getLastLocation()).toBe('NYC')
+  })
+
+  it('falls back to the newest recent search location when the key is unset', () => {
+    addRecentSearch({ q: 'pizza', location: 'Berkeley, CA', mode: 'delivery' })
+    expect(localStorage.getItem(LOC_KEY)).toBeNull()
+    expect(getLastLocation()).toBe('Berkeley, CA')
+  })
+
+  it('prefers the explicit key over the recent-search fallback', () => {
+    addRecentSearch({ q: 'pizza', location: 'Berkeley, CA', mode: 'delivery' })
+    setLastLocation('Oakland, CA')
+    expect(getLastLocation()).toBe('Oakland, CA')
+  })
+
+  it('returns "" when localStorage read throws', () => {
+    localStorage.setItem(LOC_KEY, 'NYC')
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    expect(getLastLocation()).toBe('')
+  })
+
+  it('does not throw when localStorage write fails', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+    expect(() => setLastLocation('NYC')).not.toThrow()
   })
 })
 

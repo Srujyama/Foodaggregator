@@ -1,5 +1,31 @@
 const STORAGE_KEY = 'fa.recentSearches'
+const LAST_LOCATION_KEY = 'fa.lastLocation'
 const MAX_RECENTS = 8
+
+// The location the user last searched with, persisted across sessions. Lets
+// the home page's trending chips and the navbar run a search without making
+// the user re-type where they are. Best-effort: storage may be unavailable.
+// Falls back to the newest recent search's location so returning users get a
+// working location even before the dedicated key was ever written.
+export function getLastLocation() {
+  try {
+    const explicit = localStorage.getItem(LAST_LOCATION_KEY)
+    if (explicit) return explicit
+  } catch {
+    return ''
+  }
+  return getRecentSearches()[0]?.location || ''
+}
+
+export function setLastLocation(location) {
+  try {
+    if (location && location.trim()) {
+      localStorage.setItem(LAST_LOCATION_KEY, location.trim())
+    }
+  } catch {
+    // ignore — last-location memory is best-effort
+  }
+}
 
 export function getRecentSearches() {
   try {

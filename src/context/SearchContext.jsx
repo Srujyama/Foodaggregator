@@ -1,10 +1,13 @@
 import { createContext, useContext, useState } from 'react'
+import { getLastLocation } from '../lib/recentSearches.js'
 
 const SearchContext = createContext({})
 
 export function SearchProvider({ children }) {
   const [query, setQuery] = useState('')
-  const [location, setLocation] = useState('')
+  // Seed from the last-used location so trending chips / the navbar can search
+  // without re-prompting for where the user is.
+  const [location, setLocation] = useState(() => getLastLocation())
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)

@@ -123,10 +123,14 @@ describe('lastLocation', () => {
     expect(getLastLocation()).toBe('Oakland, CA')
   })
 
-  it('returns "" when localStorage read throws', () => {
+  it('returns "" when reading the last-location key throws', () => {
+    // A value is stored, but reading the dedicated key throws. getLastLocation's
+    // catch must short-circuit to '' rather than fall through to the recent-search
+    // fallback — so scope the throw to LOC_KEY to prove the early return.
     localStorage.setItem(LOC_KEY, 'NYC')
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('denied')
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation((key) => {
+      if (key === LOC_KEY) throw new Error('denied')
+      return null
     })
     expect(getLastLocation()).toBe('')
   })

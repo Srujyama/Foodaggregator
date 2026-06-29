@@ -158,6 +158,7 @@ export default function SearchBar({ large = false, initialQuery = '', initialLoc
             <MapPin className={cn('shrink-0 ml-3', large ? 'w-5 h-5 text-orange-400' : 'w-4 h-4 text-gray-400')} />
             <input
               type="text"
+              data-location-input
               placeholder="City, ZIP, or address"
               value={localLocation}
               onChange={(e) => handleLocationChange(e.target.value)}

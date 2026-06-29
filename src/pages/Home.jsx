@@ -89,6 +89,10 @@ export default function Home() {
   const [deals, setDeals] = useState([])
   const [dealsLocation, setDealsLocation] = useState('')
   const [recents, setRecents] = useState(() => getRecentSearches())
+  // The term a trending chip seeds into the hero search bar when we can't search
+  // yet (no known location). SearchBar's visible input is bound to its own local
+  // state, so flowing this through `initialQuery` is what actually fills the box.
+  const [heroQuery, setHeroQuery] = useState('')
   const { search, setQuery } = useSearch()
   const { location } = useSearchContext()
   const heroRef = useRef(null)
@@ -112,16 +116,19 @@ export default function Home() {
 
   const handlePopularClick = (term) => {
     setQuery(term)
-    // A trending term carries no location of its own. Use whatever location we
-    // already know (the user's last search, seeded into context, or the deals
-    // location); if we have none, prefill the term and focus the search bar so
-    // the user just adds where they are — rather than the click doing nothing.
-    const loc = location || dealsLocation
-    if (loc) {
-      search(term, loc)
+    // A trending term carries no location of its own. If we know where the user
+    // is (their last search, seeded into context), search straight away.
+    // Otherwise prefill the term into the hero search bar and focus the location
+    // field so the user just adds where they are — rather than the click doing
+    // nothing, or silently searching a city they never chose. (dealsLocation is
+    // a server display default for the Deals section, not the user's intent, so
+    // it deliberately does NOT drive the search here.)
+    if (location) {
+      search(term, location)
     } else {
+      setHeroQuery(term)
       toast('Add your location to search', { icon: '📍' })
-      heroRef.current?.querySelector('input')?.focus()
+      heroRef.current?.querySelector('[data-location-input]')?.focus()
     }
   }
 
@@ -157,7 +164,7 @@ export default function Home() {
           </p>
 
           <div ref={heroRef}>
-            <SearchBar large />
+            <SearchBar large initialQuery={heroQuery} />
           </div>
 
           {/* Recent searches */}

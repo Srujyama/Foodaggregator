@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import toast from 'react-hot-toast'
 import { TrendingUp, Zap, DollarSign, Clock, ArrowRight, ShieldCheck, Car, Tag, ExternalLink, History } from 'lucide-react'
 import SearchBar from '../components/SearchBar.jsx'
 import { getPopularSearches } from '../lib/firebase/firestore.js'
 import { getDeals } from '../lib/api.js'
 import { getRecentSearches, clearRecentSearches } from '../lib/recentSearches.js'
 import { useSearch } from '../hooks/useSearch.js'
+import { useSearchContext } from '../context/SearchContext.jsx'
 import { formatPrice, formatETA } from '../lib/utils.js'
+import { computeTotalCost } from '../utils/sorting.js'
 import PlatformBadge from '../components/PlatformBadge.jsx'
 
 const POPULAR_FALLBACK = [
@@ -86,7 +89,13 @@ export default function Home() {
   const [deals, setDeals] = useState([])
   const [dealsLocation, setDealsLocation] = useState('')
   const [recents, setRecents] = useState(() => getRecentSearches())
+  // The term a trending chip seeds into the hero search bar when we can't search
+  // yet (no known location). SearchBar's visible input is bound to its own local
+  // state, so flowing this through `initialQuery` is what actually fills the box.
+  const [heroQuery, setHeroQuery] = useState('')
   const { search, setQuery } = useSearch()
+  const { location } = useSearchContext()
+  const heroRef = useRef(null)
 
   useEffect(() => {
     getPopularSearches(8).then((data) => {
@@ -107,6 +116,20 @@ export default function Home() {
 
   const handlePopularClick = (term) => {
     setQuery(term)
+    // A trending term carries no location of its own. If we know where the user
+    // is (their last search, seeded into context), search straight away.
+    // Otherwise prefill the term into the hero search bar and focus the location
+    // field so the user just adds where they are — rather than the click doing
+    // nothing, or silently searching a city they never chose. (dealsLocation is
+    // a server display default for the Deals section, not the user's intent, so
+    // it deliberately does NOT drive the search here.)
+    if (location) {
+      search(term, location)
+    } else {
+      setHeroQuery(term)
+      toast('Add your location to search', { icon: '📍' })
+      heroRef.current?.querySelector('[data-location-input]')?.focus()
+    }
   }
 
   const handleClearRecents = () => {
@@ -140,7 +163,9 @@ export default function Home() {
             Compare prices across Uber Eats, DoorDash, Grubhub, Postmates, Seamless, Caviar, gopuff, and EatStreet in one search.
           </p>
 
-          <SearchBar large />
+          <div ref={heroRef}>
+            <SearchBar large initialQuery={heroQuery} />
+          </div>
 
           {/* Recent searches */}
           {recents.length > 0 && (
@@ -270,32 +295,40 @@ export default function Home() {
               </p>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {deals.map((deal) => {
-                const bestPlatform = deal.platforms?.[0]
-                const promo = deal.platforms?.find((p) => p.promo_text)?.promo_text
+              {deals.map((deal, dealIdx) => {
+                const platforms = deal.platforms || []
+                // Cheapest-by-total-fees platform drives the headline price and
+                // the order link (matches how the rest of the app ranks deals).
+                const bestPlatform = platforms.reduce(
+                  (best, p) => (best && computeTotalCost(best) <= computeTotalCost(p) ? best : p),
+                  null,
+                )
+                const promo = platforms.find((p) => p.promo_text)?.promo_text
+                // One badge per platform — Postmates/UberEats can both appear.
+                const uniquePlatforms = [...new Set(platforms.map((p) => p.platform))]
                 return (
                   <div
-                    key={deal.restaurant_name}
-                    className="bg-white rounded-2xl border border-gray-200 p-5 hover:shadow-lg hover:border-orange-200 transition-all duration-300"
+                    key={platforms[0]?.restaurant_id || `${deal.restaurant_name}-${dealIdx}`}
+                    className="bg-white rounded-2xl border border-gray-200 p-5 hover:shadow-lg hover:border-orange-200 transition-all duration-300 flex flex-col"
                   >
                     <h3 className="font-bold text-gray-900 text-sm mb-2 truncate">
                       {deal.restaurant_name}
                     </h3>
                     <div className="flex flex-wrap gap-1.5 mb-3">
-                      {deal.platforms?.map((p) => (
-                        <PlatformBadge key={p.platform} platform={p.platform} />
+                      {uniquePlatforms.map((p) => (
+                        <PlatformBadge key={p} platform={p} />
                       ))}
                     </div>
                     {promo && (
-                      <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 mb-3 font-medium">
+                      <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 mb-3 font-medium line-clamp-2">
                         {promo}
                       </p>
                     )}
-                    <div className="flex items-center justify-between text-xs text-gray-500">
+                    <div className="flex items-center justify-between text-xs text-gray-500 mt-auto">
                       <span>
-                        Delivery: <span className="font-semibold text-emerald-600">{formatPrice(bestPlatform?.delivery_fee ?? 0)}</span>
+                        Fees: <span className="font-semibold text-emerald-600">{formatPrice(computeTotalCost(bestPlatform ?? {}))}</span>
                       </span>
-                      <span>{formatETA(bestPlatform?.estimated_delivery_minutes)} </span>
+                      <span>{formatETA(bestPlatform?.estimated_delivery_minutes)}</span>
                     </div>
                     {bestPlatform?.restaurant_url && (
                       <a

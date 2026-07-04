@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import { searchRestaurants } from '../lib/api.js'
-import { addRecentSearch } from '../lib/recentSearches.js'
+import { addRecentSearch, setLastLocation } from '../lib/recentSearches.js'
 import { useSearchContext } from '../context/SearchContext.jsx'
 
 export function useSearch() {
@@ -30,6 +30,7 @@ export function useSearch() {
         const data = await searchRestaurants(searchQuery, searchLocation, { mode: searchMode })
         setResults(data.results || [])
         addRecentSearch({ q: searchQuery, location: searchLocation, mode: searchMode })
+        setLastLocation(searchLocation)
         setPlatformStatus(data.platform_status || {})
         // Only navigate when the search target actually changed. The Results
         // page re-runs search() on mount, and unconditionally rebuilding the

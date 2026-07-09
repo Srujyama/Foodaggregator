@@ -19,6 +19,30 @@ class MenuItem(BaseModel):
     description: Optional[str] = None
     price: float
     image_url: Optional[str] = None
+    section: Optional[str] = None       # menu category, e.g. "Burritos"
+    item_id: Optional[str] = None       # platform's stable item id
+    is_available: Optional[bool] = None  # False when the platform marks it sold out
+
+
+class FeeSchedule(BaseModel):
+    """Complete pre-checkout fee picture for one platform listing.
+
+    All monetary fields are dollars. `estimated_fields` lists the field names
+    whose values come from the platform's published/disclosed rates rather
+    than this listing's own payload (platforms like Uber Eats and DoorDash
+    only reveal the exact service fee at checkout), so the UI can label them.
+    """
+    delivery_fee: Optional[float] = None
+    service_fee_pct: Optional[float] = None    # % of the item subtotal
+    service_fee_flat: Optional[float] = None   # flat fee (used when pct is None)
+    service_fee_min: Optional[float] = None    # floor when pct-based
+    service_fee_max: Optional[float] = None    # cap when pct-based
+    small_order_fee: Optional[float] = None
+    small_order_threshold: Optional[float] = None  # fee applies below this subtotal
+    minimum_order: Optional[float] = None
+    tax_rate_pct: Optional[float] = None       # only when the platform exposes it
+    estimated_fields: List[str] = []
+    notes: List[str] = []
 
 
 class MenuItemComparison(BaseModel):
@@ -38,6 +62,7 @@ class PlatformResult(BaseModel):
     # Delivery pricing
     delivery_fee: float
     service_fee: float
+    fee_schedule: Optional[FeeSchedule] = None
     estimated_delivery_minutes: int
     estimated_delivery_minutes_max: Optional[int] = None
     # Pickup pricing

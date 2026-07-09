@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowDown, Search, TrendingDown, Trophy } from 'lucide-react'
+import { ArrowDown, Plus, Search, TrendingDown, Trophy } from 'lucide-react'
 import { formatPrice } from '../lib/utils.js'
 import { cn } from '../lib/utils.js'
 import PlatformBadge from './PlatformBadge.jsx'
@@ -15,7 +15,10 @@ const PLATFORM_LABELS = {
   eatstreet: 'EatStreet',
 }
 
-export default function MenuComparison({ menuComparison, platforms, avgMarkup }) {
+// onAdd is optional: when provided (RestaurantDetail passes the MealBuilder
+// handler) every row gets an "Add" button; without it the table renders
+// exactly as before.
+export default function MenuComparison({ menuComparison, platforms, avgMarkup, onAdd }) {
   const [query, setQuery] = useState('')
   const [diffOnly, setDiffOnly] = useState(false)
 
@@ -194,13 +197,26 @@ export default function MenuComparison({ menuComparison, platforms, avgMarkup })
                   gridTemplateColumns: `1fr repeat(${platformNames.length}, minmax(80px, 1fr))`,
                 }}
               >
-                <div className="min-w-0">
-                  <p className="font-medium text-gray-900 truncate">{item.item_name}</p>
-                  {item.price_difference > 0.01 && (
-                    <p className="text-xs text-green-600 flex items-center gap-1 mt-0.5">
-                      <ArrowDown className="w-3 h-3" />
-                      Save {formatPrice(item.price_difference)}
-                    </p>
+                <div className="min-w-0 flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-gray-900 truncate">{item.item_name}</p>
+                    {item.price_difference > 0.01 && (
+                      <p className="text-xs text-green-600 flex items-center gap-1 mt-0.5">
+                        <ArrowDown className="w-3 h-3" />
+                        Save {formatPrice(item.price_difference)}
+                      </p>
+                    )}
+                  </div>
+                  {onAdd && (
+                    <button
+                      type="button"
+                      onClick={() => onAdd(item)}
+                      aria-label={`Add ${item.item_name} to meal`}
+                      className="shrink-0 inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Add
+                    </button>
                   )}
                 </div>
                 {platformNames.map((platform) => {

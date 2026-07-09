@@ -95,6 +95,26 @@ async def test_aggregator(query, location, expected_keyword):
             print(f"  [PASS] {hit.restaurant_name}")
             print(f"         platforms=[{platforms}]  menu_items={menu_total}  comparisons={len(hit.menu_comparison)}")
             print(f"         avg markup %: {hit.avg_menu_markup_by_platform}")
+            for p in hit.platforms:
+                sections = {m.section for m in p.menu_items if m.section}
+                fs = p.fee_schedule
+                fs_desc = "MISSING"
+                if fs:
+                    sf = (
+                        f"{fs.service_fee_pct}%"
+                        if fs.service_fee_pct is not None
+                        else (f"${fs.service_fee_flat}" if fs.service_fee_flat is not None else "?")
+                    )
+                    est = ",".join(fs.estimated_fields) or "none"
+                    fs_desc = (
+                        f"delivery=${fs.delivery_fee} service={sf} "
+                        f"min_order={fs.minimum_order} small_order={fs.small_order_fee}"
+                        f"@<{fs.small_order_threshold} est=[{est}]"
+                    )
+                print(
+                    f"         {p.platform.value}: {len(p.menu_items)} items / "
+                    f"{len(sections)} sections | fees: {fs_desc}"
+                )
             if hit.menu_comparison:
                 c0 = hit.menu_comparison[0]
                 prices = ", ".join(

@@ -401,6 +401,63 @@ async def test_enrich_menus_preserves_platform_when_detail_fails():
     assert p.service_fee == 1.0
 
 
+@pytest.mark.asyncio
+async def test_enrich_reconciles_adopted_detail_schedule_with_flat_fees():
+    """A detail parse that found no delivery fee ships a $0 fee schedule;
+    adopting it must not clobber the feed's real fee — the schedule gets
+    backfilled from the guarded flat field."""
+    from app.models.food import FeeSchedule
+
+    feed_row = _pr(Platform.UBER_EATS, rid="x", delivery_fee=2.99)
+    feed_row.fee_schedule = FeeSchedule(delivery_fee=2.99, service_fee_pct=15.0)
+    agg = AggregatorService.__new__(AggregatorService)
+
+    class FakeScraper:
+        async def get_restaurant(self, rid, location, mode):
+            detail = _pr(
+                Platform.UBER_EATS, rid=rid,
+                menu=[MenuItem(name="m", price=1.0)],
+                delivery_fee=0.0,
+            )
+            detail.fee_schedule = FeeSchedule(
+                delivery_fee=0.0, service_fee_pct=15.0, minimum_order=None
+            )
+            return detail
+
+    agg.scrapers = {Platform.UBER_EATS: FakeScraper()}
+    aggregated = [_build_aggregated("X", "19713", [feed_row])]
+    await agg._enrich_menus(aggregated, "19713")
+    p = aggregated[0].platforms[0]
+    assert p.delivery_fee == 2.99  # flat guard kept the feed fee
+    assert p.fee_schedule.delivery_fee == 2.99  # schedule reconciled to match
+
+
+@pytest.mark.asyncio
+async def test_enrich_keeps_detail_schedule_fee_when_flat_is_zero():
+    """Grubhub detail keeps its real availability fee only in the schedule
+    while the flat field stays 0 — reconciliation must not zero it out."""
+    from app.models.food import FeeSchedule
+
+    feed_row = _pr(Platform.GRUBHUB, rid="g", delivery_fee=0.0)
+    agg = AggregatorService.__new__(AggregatorService)
+
+    class FakeScraper:
+        async def get_restaurant(self, rid, location, mode):
+            detail = _pr(
+                Platform.GRUBHUB, rid=rid,
+                menu=[MenuItem(name="m", price=1.0)],
+                delivery_fee=0.0,
+            )
+            detail.fee_schedule = FeeSchedule(delivery_fee=3.49, service_fee_pct=12.5)
+            return detail
+
+    agg.scrapers = {Platform.GRUBHUB: FakeScraper()}
+    aggregated = [_build_aggregated("X", "19713", [feed_row])]
+    await agg._enrich_menus(aggregated, "19713")
+    p = aggregated[0].platforms[0]
+    assert p.fee_schedule.delivery_fee == 3.49  # schedule knows better; kept
+
+
 # ---------- mode plumbing ----------
 
 

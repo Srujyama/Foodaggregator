@@ -71,7 +71,7 @@ export default function PlatformCard({ platform, isBestDeal = false }) {
         </div>
         <div className="space-y-1.5">
           <FeeRow label="Delivery Fee" value={platform.delivery_fee} highlight={platform.delivery_fee === 0} />
-          <FeeRow label="Service Fee" value={platform.service_fee} />
+          <ServiceFeeRow platform={platform} />
           {platform.minimum_order != null && (
             <FeeRow label="Min Order" value={platform.minimum_order} />
           )}
@@ -239,6 +239,27 @@ function formatRelativeTime(iso) {
   } catch {
     return ''
   }
+}
+
+// Most platforms only reveal a % service fee before checkout, so the flat
+// service_fee field is a misleading $0.00. When the fee schedule carries a
+// pct (and no real flat fee was scraped), show "15% of subtotal" instead —
+// marked "(est.)" only when the backend backfilled it from platform defaults.
+function ServiceFeeRow({ platform }) {
+  const schedule = platform.fee_schedule
+  const pct = schedule?.service_fee_pct
+  if (pct == null || platform.service_fee > 0) {
+    return <FeeRow label="Service Fee" value={platform.service_fee} />
+  }
+  const estimated = schedule.estimated_fields?.includes('service_fee_pct')
+  return (
+    <div className="flex justify-between text-xs">
+      <span className="text-gray-500">Service Fee</span>
+      <span className="font-medium tabular-nums text-gray-700">
+        {Number(pct.toFixed(2))}% of subtotal{estimated ? ' (est.)' : ''}
+      </span>
+    </div>
+  )
 }
 
 function FeeRow({ label, value, highlight = false }) {

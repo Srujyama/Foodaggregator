@@ -97,6 +97,16 @@ describe('availability badges', () => {
   })
 })
 
+describe('Full Details link', () => {
+  it('propagates the order mode so the detail page estimates the right totals', () => {
+    renderResult()
+    const link = screen.getByRole('link', { name: /full details/i })
+    // SearchContext defaults to delivery; the param must be present so a
+    // pickup toggle upstream reaches the meal-cost calculator.
+    expect(link.getAttribute('href')).toContain('mode=delivery')
+  })
+})
+
 describe('View Menu toggle', () => {
   it('expands and collapses the inline menu section', async () => {
     const user = userEvent.setup()

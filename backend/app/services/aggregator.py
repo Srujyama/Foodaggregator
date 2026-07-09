@@ -11,6 +11,7 @@ from app.models.food import (
     Platform,
     PlatformResult,
 )
+from app.services.pricing import ensure_fee_schedule
 from app.services.caviar import CaviarScraper
 from app.services.doordash import DoorDashScraper
 from app.services.eatstreet import EatStreetScraper
@@ -342,6 +343,11 @@ def _build_menu_comparison(platforms: list[PlatformResult]) -> list[MenuItemComp
     for platform_result in platforms:
         platform_name = platform_result.platform.value
         for menu_item in platform_result.menu_items:
+            # A zero price is either a genuine freebie or a "price varies by
+            # customization" placeholder — either way it must not compete as
+            # a platform's "cheapest" price for the item.
+            if menu_item.price <= 0:
+                continue
             norm = _normalize_menu_item_name(menu_item.name)
             if not norm or len(norm) < 2:
                 continue
@@ -552,6 +558,12 @@ class AggregatorService:
             and not _has_only_non_food_categories(r.categories)
         ]
 
+        # Every result must carry a fee schedule so the meal-cost calculator
+        # works on all platforms; scrapers with rich payloads set their own,
+        # this fills the rest from the flat fields + published defaults.
+        for r in all_results:
+            ensure_fee_schedule(r)
+
         # Postmates and UberEats share one Uber backend - any time a store comes
         # back from both surfaces with the same storeUuid, it is the literal
         # same listing. Drop the Postmates copy so the comparison reflects
@@ -663,6 +675,7 @@ class AggregatorService:
                 "categories", "price_bucket", "address", "phone",
                 "hours_today_text", "closing_soon",
                 "allergen_disclaimer_html", "status_text",
+                "fee_schedule",
             ):
                 val = getattr(detail, field, None)
                 if val not in (None, "", [], 0):
@@ -678,6 +691,25 @@ class AggregatorService:
                 )
             elif d_max and (target.estimated_delivery_minutes or 0) <= d_max:
                 target.estimated_delivery_minutes_max = d_max
+            # Reconcile the schedule with the guarded flat fields. Two cases:
+            # a detail schedule was adopted but its parse found no delivery
+            # fee (ships 0/None) while the flat merge above kept the feed's
+            # real fee — backfill it; or no detail schedule arrived and the
+            # feed schedule is stale against a flat fee the detail updated —
+            # sync it. A positive schedule fee with a $0 flat (Grubhub detail
+            # keeps its availability fee only in the schedule) is left alone.
+            detail_has_schedule = getattr(detail, "fee_schedule", None) is not None
+            if target.fee_schedule:
+                fs = target.fee_schedule
+                if not fs.delivery_fee and target.delivery_fee > 0:
+                    fs.delivery_fee = target.delivery_fee
+                elif (
+                    not detail_has_schedule
+                    and fs.delivery_fee != target.delivery_fee
+                ):
+                    fs.delivery_fee = target.delivery_fee
+                if fs.minimum_order is None and target.minimum_order is not None:
+                    fs.minimum_order = target.minimum_order
 
     async def get_restaurant(
         self, name: str, location: str, mode: str = "delivery"
@@ -712,6 +744,7 @@ class AggregatorService:
             try:
                 result = await task
                 if result:
+                    ensure_fee_schedule(result)
                     detailed_platforms.append(result)
             except Exception as e:
                 logger.warning(f"[Aggregator] Detail fetch failed: {e}")

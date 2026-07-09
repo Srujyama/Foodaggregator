@@ -1,14 +1,16 @@
+import { useRef, useState } from 'react'
 import { useSearchParams, useParams, Link } from 'react-router-dom'
-import { ArrowLeft, AlertTriangle, Star, MapPin, Clock, UtensilsCrossed, SearchX } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, ChevronDown, Plus, Star, MapPin, Clock, UtensilsCrossed, SearchX } from 'lucide-react'
 import PlatformCard from '../components/PlatformCard.jsx'
 import DealRanking from '../components/DealRanking.jsx'
 import MenuComparison from '../components/MenuComparison.jsx'
+import MealBuilder from '../components/MealBuilder.jsx'
 import ErrorBanner from '../components/ErrorBanner.jsx'
 import { SkeletonDetail } from '../components/LoadingSpinner.jsx'
 import PlatformBadge from '../components/PlatformBadge.jsx'
 import { useRestaurant } from '../hooks/useRestaurant.js'
 import { rankByBestDeal, getBestRating, isPlatformOpen } from '../utils/sorting.js'
-import { formatPrice, sanitizeHtml } from '../lib/utils.js'
+import { cn, formatPrice, sanitizeHtml } from '../lib/utils.js'
 
 function pickRichest(platforms, key) {
   for (const p of platforms || []) {
@@ -18,11 +20,25 @@ function pickRichest(platforms, key) {
   return null
 }
 
+// Group menu items by their platform section (menu category), preserving the
+// order sections first appear in. Items without a section land in "Menu".
+function groupBySection(items) {
+  const groups = new Map()
+  for (const item of items || []) {
+    const section = item.section || 'Menu'
+    if (!groups.has(section)) groups.set(section, [])
+    groups.get(section).push(item)
+  }
+  return [...groups.entries()]
+}
+
 export default function RestaurantDetail() {
   const { slug } = useParams()
   const [searchParams] = useSearchParams()
   const location = searchParams.get('location') || ''
+  const mode = searchParams.get('mode') === 'pickup' ? 'pickup' : 'delivery'
   const restaurantName = searchParams.get('name') || slug?.replace(/-/g, ' ')
+  const mealRef = useRef(null)
 
   const { data, loading, error } = useRestaurant(restaurantName, location)
 
@@ -43,7 +59,7 @@ export default function RestaurantDetail() {
     <main className="max-w-4xl mx-auto px-4 py-8">
       {/* Back button */}
       <Link
-        to={`/results?q=${encodeURIComponent(restaurantName)}&location=${encodeURIComponent(location)}`}
+        to={`/results?q=${encodeURIComponent(restaurantName)}&location=${encodeURIComponent(location)}&mode=${mode}`}
         className="inline-flex items-center gap-2 text-sm text-gray-500 hover:text-orange-500 transition-colors mb-6"
       >
         <ArrowLeft className="w-4 h-4" />
@@ -158,6 +174,21 @@ export default function RestaurantDetail() {
                 menuComparison={data.menu_comparison}
                 platforms={data.platforms}
                 avgMarkup={data.avg_menu_markup_by_platform}
+                onAdd={(row) => mealRef.current?.addFromComparisonRow(row)}
+              />
+            </div>
+          )}
+
+          {/* Build-your-meal cost calculator */}
+          {(hasMenuComparison || hasMenuItems) && (
+            <div className="mb-8 animate-rise">
+              <h2 className="font-bold text-gray-800 text-lg mb-4">Build Your Meal</h2>
+              <MealBuilder
+                ref={mealRef}
+                platforms={data.platforms}
+                menuComparison={data.menu_comparison || []}
+                location={location}
+                mode={mode}
               />
             </div>
           )}
@@ -169,43 +200,33 @@ export default function RestaurantDetail() {
               <div className="space-y-6">
                 {data.platforms
                   .filter((p) => p.menu_items?.length > 0)
-                  .map((platform) => (
-                    <div key={platform.platform}>
-                      <div className="flex items-center gap-3 mb-3">
-                        <PlatformBadge platform={platform.platform} size="md" />
-                        <span className="text-sm text-gray-400">
-                          {platform.menu_items.length} item{platform.menu_items.length !== 1 ? 's' : ''}
-                        </span>
+                  .map((platform) => {
+                    const sections = groupBySection(platform.menu_items)
+                    return (
+                      <div key={platform.platform}>
+                        <div className="flex items-center gap-3 mb-3">
+                          <PlatformBadge platform={platform.platform} size="md" />
+                          <span className="text-sm text-gray-400">
+                            {platform.menu_items.length} item{platform.menu_items.length !== 1 ? 's' : ''}
+                            {sections.length > 1 && ` · ${sections.length} sections`}
+                          </span>
+                        </div>
+                        <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+                          {sections.map(([section, items], si) => (
+                            <MenuSection
+                              key={section}
+                              title={section}
+                              items={items}
+                              defaultOpen={si < 2}
+                              onAdd={(item) =>
+                                mealRef.current?.addFromMenuItem(platform.platform, item)
+                              }
+                            />
+                          ))}
+                        </div>
                       </div>
-                      <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-                        {platform.menu_items.slice(0, 30).map((item, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center justify-between px-5 py-3.5 border-b last:border-b-0 border-gray-100 hover:bg-gray-50 transition-colors"
-                          >
-                            <div className="flex-1 min-w-0">
-                              <p className="font-medium text-gray-900 truncate">
-                                {item.name}
-                              </p>
-                              {item.description && (
-                                <p className="text-sm text-gray-400 truncate">
-                                  {item.description}
-                                </p>
-                              )}
-                            </div>
-                            <span className="font-semibold text-gray-800 ml-4 shrink-0 tabular-nums">
-                              {formatPrice(item.price)}
-                            </span>
-                          </div>
-                        ))}
-                        {platform.menu_items.length > 30 && (
-                          <div className="px-5 py-3 text-center text-xs text-gray-400 bg-gray-50">
-                            +{platform.menu_items.length - 30} more items
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                    )
+                  })}
               </div>
             </div>
           ) : (
@@ -238,5 +259,78 @@ export default function RestaurantDetail() {
         </>
       )}
     </main>
+  )
+}
+
+// Collapsible menu category. Sections replace the old 30-item hard cap: every
+// item renders inside its section, and collapsing is the pagination.
+function MenuSection({ title, items, defaultOpen = false, onAdd }) {
+  const [open, setOpen] = useState(defaultOpen)
+
+  return (
+    <div className="border-b last:border-b-0 border-gray-100">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-3 px-5 py-3.5 text-left hover:bg-gray-50 transition-colors"
+      >
+        <span className="font-semibold text-gray-800">{title}</span>
+        <span className="flex items-center gap-2 text-xs text-gray-400 shrink-0">
+          {items.length} item{items.length !== 1 ? 's' : ''}
+          <ChevronDown
+            className={cn('w-4 h-4 transition-transform', open && 'rotate-180')}
+          />
+        </span>
+      </button>
+
+      {open &&
+        items.map((item, i) => {
+          const soldOut = item.is_available === false
+          return (
+            <div
+              key={item.item_id || `${item.name}-${i}`}
+              className={cn(
+                'flex items-center justify-between gap-3 px-5 py-3 border-t border-gray-50',
+                soldOut ? 'opacity-60' : 'hover:bg-gray-50 transition-colors',
+              )}
+            >
+              <div className="flex-1 min-w-0">
+                <p className={cn('font-medium truncate', soldOut ? 'text-gray-400' : 'text-gray-900')}>
+                  {item.name}
+                </p>
+                {item.description && (
+                  <p className="text-sm text-gray-400 truncate">{item.description}</p>
+                )}
+              </div>
+              <span
+                className={cn(
+                  'font-semibold shrink-0 tabular-nums',
+                  soldOut ? 'text-gray-400' : 'text-gray-800',
+                )}
+              >
+                {formatPrice(item.price)}
+              </span>
+              {soldOut ? (
+                <span className="shrink-0 text-[11px] font-semibold text-rose-600 bg-rose-50 border border-rose-200 rounded-full px-2 py-0.5">
+                  Sold out
+                </span>
+              ) : (
+                onAdd && (
+                  <button
+                    type="button"
+                    onClick={() => onAdd(item)}
+                    aria-label={`Add ${item.name} to meal`}
+                    className="shrink-0 inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors"
+                  >
+                    <Plus className="w-3 h-3" />
+                    Add
+                  </button>
+                )
+              )}
+            </div>
+          )
+        })}
+    </div>
   )
 }

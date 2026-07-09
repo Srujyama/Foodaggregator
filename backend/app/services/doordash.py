@@ -19,6 +19,7 @@ import httpx
 from curl_cffi import requests as cffi_requests
 
 from app.models.food import MenuItem, Platform, PlatformResult
+from app.services.pricing import build_fee_schedule
 from app.services.scraper_base import BaseScraper, geocode
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,169 @@ def _extract_rsc_text(html: str) -> str:
     return "".join(combined)
 
 
+_JSON_DECODER = json.JSONDecoder()
+
+# Safety bounds. A big store menu is 200-500 items; a search page is ~50
+# stores. Anything past these caps is runaway parsing, not data.
+MENU_ITEM_SAFETY_CAP = 2000
+MAX_SEARCH_RECORDS = 500
+
+
+def _json_value_at(text: str, start: int):
+    """Parse exactly ONE balanced JSON value starting at text[start].
+
+    The RSC blob interleaves real data objects with GraphQL query ASTs that
+    reuse the same key names as {"kind":"Name","value":"menuBook"} nodes, so
+    fixed-window regexes misfire. ``raw_decode`` consumes one brace/bracket-
+    matched value (respecting strings and escapes) and reports where it ended.
+    Returns (value, end_index), or (None, start) when text[start:] is not
+    valid JSON.
+    """
+    try:
+        return _JSON_DECODER.raw_decode(text, start)
+    except (ValueError, TypeError):
+        return None, start
+
+
+def _display_money_to_float(display) -> Optional[float]:
+    """Parse '$8.77' — or DoorDash's RSC-doubled '$$8.77' — to 8.77."""
+    if not display or not isinstance(display, str):
+        return None
+    m = re.search(r"\$+\s*(\d+(?:\.\d+)?)", display)
+    if not m:
+        return None
+    try:
+        return round(float(m.group(1)), 2)
+    except ValueError:
+        return None
+
+
+def _amount_field_to_dollars(value) -> Optional[float]:
+    """Convert a DoorDash ``*_amount`` numeric field to dollars.
+
+    DoorDash's monetary convention is integer cents (unitAmount et al.), so
+    whole numbers are treated as cents. In the July 2026 capture every search
+    record carried ``delivery_fee_amount: 0`` (anonymous first-order promo),
+    so the unit could not be re-confirmed against a nonzero live value; a
+    value with a fractional part is defensively treated as already-dollars.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num <= 0:
+        return 0.0
+    if num != int(num):
+        return round(num, 2)
+    return round(num / 100.0, 2)
+
+
+# ---------------------------------------------------------------------------
+# 2026 search-page store records
+# ---------------------------------------------------------------------------
+
+# Store records stream as RSC "text" rows: `5f:T9b2,{...json...}` (hex row id,
+# T + hex byte length, then the payload).
+_RSC_TEXT_ROW_ANCHOR = re.compile(r"[0-9a-fA-F]{1,8}:T[0-9a-fA-F]{1,8},\{")
+
+
+def _extract_search_store_records(full_text: str) -> list[dict]:
+    """Brace-matched parse of the 2026 search-page store records.
+
+    Each store contributes two T-rows: a `window_shopping` preview card and
+    the full search record; only the latter carries both ``store_id`` and
+    ``store_name``, which is how we tell them apart.
+    """
+    records: list[dict] = []
+    scan_pos = 0
+    for m in _RSC_TEXT_ROW_ANCHOR.finditer(full_text):
+        start = m.end() - 1  # the '{'
+        if start < scan_pos:
+            continue  # inside a row we already parsed (e.g. marker-ish text in a string)
+        obj, end = _json_value_at(full_text, start)
+        if obj is None:
+            continue
+        scan_pos = end
+        if isinstance(obj, dict) and obj.get("store_id") and obj.get("store_name"):
+            records.append(obj)
+            if len(records) >= MAX_SEARCH_RECORDS:
+                break
+    return records
+
+
+def _stores_from_search_records(full_text: str) -> list[dict]:
+    """Normalize 2026 search records into the internal store dicts.
+
+    2026 field notes (verified against a live capture):
+    - ``delivery_fee_amount`` / ``minimum_subtotal_amount``: numeric, cents
+      convention (see _amount_field_to_dollars for the 0-fee caveat).
+    - ``star_rating``: QUOTED string ("4.3"); ``num_star_rating``: quoted
+      ("12550").
+    - ``asap_time``: int minutes; ``price_range``: int 1-4.
+    """
+    stores: list[dict] = []
+    seen: set = set()
+    for rec in _extract_search_store_records(full_text):
+        try:
+            store_id = str(rec.get("store_id") or "")
+            name = rec.get("store_name") or ""
+            if not store_id or not name or store_id in seen:
+                continue
+            seen.add(store_id)
+
+            delivery_fee = _amount_field_to_dollars(rec.get("delivery_fee_amount")) or 0.0
+            minimum_order = _amount_field_to_dollars(rec.get("minimum_subtotal_amount"))
+            if not minimum_order:
+                minimum_order = None
+
+            # Prefer the numeric fee when > 0; the promo string only matters
+            # when the fee really is $0.
+            promo = None
+            fee_str = rec.get("delivery_fee_str") or rec.get("final_delivery_fee_line_str") or ""
+            if delivery_fee <= 0 and isinstance(fee_str, str) and "$0" in fee_str:
+                promo = fee_str.strip()
+
+            star_rating = rec.get("star_rating")
+            if star_rating is not None:
+                star_rating = str(star_rating)
+
+            num_ratings = None
+            raw_num = rec.get("num_star_rating")
+            try:
+                if raw_num not in (None, ""):
+                    num_ratings = int(float(str(raw_num)))
+            except (ValueError, TypeError):
+                pass
+
+            eta_text = rec.get("store_display_asap_time")
+            asap = rec.get("asap_time")
+            if not eta_text and isinstance(asap, (int, float)) and asap > 0:
+                eta_text = f"{int(asap)} min"
+
+            distance = rec.get("store_distance_in_miles")
+            price_range = rec.get("price_range")
+
+            stores.append({
+                "store_id": store_id,
+                "store_name": name,
+                "star_rating": star_rating,
+                "num_ratings": num_ratings,
+                "store_display_asap_time": eta_text,
+                "store_distance_in_miles": distance if isinstance(distance, (int, float)) else None,
+                "delivery_fee": delivery_fee,
+                "service_fee": 0.0,
+                "promo_text": promo,
+                "minimum_order": minimum_order,
+                "price_range": int(price_range) if isinstance(price_range, (int, float)) and price_range else None,
+            })
+        except Exception as e:
+            logger.debug(f"[DoorDash] search record parse error: {e}")
+            continue
+    return stores
+
+
 def _extract_rsc_stores(html: str) -> list[dict]:
     """Parse DoorDash Next.js RSC streaming payload to extract store records
     with actual fee data from the search page."""
@@ -85,6 +249,14 @@ def _extract_rsc_stores(html: str) -> list[dict]:
         return []
 
     logger.info(f"[DoorDash] RSC text length: {len(full_text)}")
+
+    # 2026 payload: complete store records stream as RSC text rows. Parse
+    # those with brace-matched JSON first — the old numeric-window regexes
+    # below are dead against this shape and only remain for older payloads.
+    stores = _stores_from_search_records(full_text)
+    if stores:
+        logger.info(f"[DoorDash] {len(stores)} stores via 2026 search records")
+        return stores
 
     stores = []
     seen_ids: set = set()
@@ -298,16 +470,123 @@ def _extract_rsc_stores(html: str) -> list[dict]:
     return stores
 
 
-def _extract_menu_items(html: str) -> list[MenuItem]:
-    """Extract menu items with prices from a DoorDash store detail page RSC payload."""
-    full_text = _extract_rsc_text(html)
+# ---------------------------------------------------------------------------
+# 2026 store-page full menu (MenuPageItemList blocks)
+# ---------------------------------------------------------------------------
+
+# Anchor on the DATA marker. The GraphQL query AST embedded in the same blob
+# only ever contains the string as {"kind":"Name","value":"..."} nodes, which
+# can never match a literal {"__typename":"MenuPageItemList" prefix.
+_MENU_SECTION_ANCHOR = re.compile(r'\{"__typename":"MenuPageItemList"')
+
+
+def _menu_items_from_item_lists(full_text: str) -> list[MenuItem]:
+    """Parse ALL MenuPageItemList section blocks into MenuItems.
+
+    Duplicate sections like "Most Ordered" repeat items that also live in
+    their real category; we keep every section but dedupe per item id (first
+    occurrence wins) so each item lands exactly once. The same NAME in two
+    different sections with different ids is two distinct items.
+    """
+    menu_items: list[MenuItem] = []
+    seen_keys: set = set()
+    scan_pos = 0
+
+    for m in _MENU_SECTION_ANCHOR.finditer(full_text):
+        if m.start() < scan_pos:
+            continue  # anchor text inside an already-parsed section
+        section_obj, end = _json_value_at(full_text, m.start())
+        if not isinstance(section_obj, dict):
+            continue
+        scan_pos = end
+
+        section_name = section_obj.get("name") or None
+        raw_items = section_obj.get("items")
+        if not isinstance(raw_items, list):
+            continue
+
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            typename = raw.get("__typename")
+            if typename is not None and typename != "MenuPageItem":
+                continue
+            name = (raw.get("name") or "").strip()
+            if not name:
+                continue
+
+            item_id = raw.get("id")
+            item_id = str(item_id) if item_id not in (None, "") else None
+            key = ("id", item_id) if item_id else ("sec", section_name, name.lower())
+            if key in seen_keys:
+                continue
+
+            # Price: quickAddContext.price.unitAmount is integer cents, but
+            # customization-priced items (fountain drinks, "from $X" combos)
+            # ship unitAmount=0 with the real starting price only in
+            # displayPrice ("$$3.53+" — RSC doubles the $). So a zero
+            # unitAmount falls through to displayPrice, and only items with
+            # no price anywhere land at 0.0 (genuine freebies).
+            price: Optional[float] = None
+            qac = raw.get("quickAddContext")
+            if isinstance(qac, dict):
+                price_obj = qac.get("price")
+                if isinstance(price_obj, dict):
+                    unit_amount = price_obj.get("unitAmount")
+                    if (
+                        isinstance(unit_amount, (int, float))
+                        and not isinstance(unit_amount, bool)
+                        and unit_amount > 0
+                    ):
+                        price = round(unit_amount / 100.0, 2)
+            if price is None:
+                price = _display_money_to_float(raw.get("displayPrice"))
+            if price is None:
+                price = 0.0
+
+            description = raw.get("description")
+            if isinstance(description, str):
+                description = description.strip() or None
+            else:
+                description = None
+
+            image_url = raw.get("imageUrl") or raw.get("imgUrl")
+            if not (isinstance(image_url, str) and image_url.startswith("http")):
+                image_url = None
+
+            is_available = raw.get("isAvailable")
+            if not isinstance(is_available, bool):
+                is_available = None
+
+            seen_keys.add(key)
+            menu_items.append(MenuItem(
+                name=name,
+                description=description,
+                price=price,
+                image_url=image_url,
+                section=section_name,
+                item_id=item_id,
+                is_available=is_available,
+            ))
+            if len(menu_items) >= MENU_ITEM_SAFETY_CAP:
+                return menu_items
+
+    return menu_items
+
+
+def _extract_menu_items_from_text(full_text: str) -> list[MenuItem]:
+    """Extract menu items from an already-combined RSC text blob."""
     if not full_text:
         return []
 
-    menu_items = []
+    # Primary (2026): full menu via MenuPageItemList blocks.
+    menu_items = _menu_items_from_item_lists(full_text)
+    if menu_items:
+        return menu_items
+
     seen_items: set = set()
 
-    # 2026 format: StorePageCarouselItem with name, description, displayPrice, imgUrl
+    # Fallback 1: ~25-item StorePageCarouselItem previews (pre-2026 shape).
     for m in re.finditer(
         r'StorePageCarouselItem","id":"(\d+)","name":"([^"]+)"',
         full_text,
@@ -363,12 +642,13 @@ def _extract_menu_items(html: str) -> list[MenuItem]:
             description=description,
             price=price,
             image_url=image_url,
+            item_id=item_id,
         ))
 
-        if len(menu_items) >= 100:
+        if len(menu_items) >= MENU_ITEM_SAFETY_CAP:
             break
 
-    # Fallback: old item_id / item_name pattern
+    # Fallback 2: old item_id / item_name pattern
     if not menu_items:
         for m in re.finditer(r'"item_id":"(\d+)"', full_text):
             item_id = m.group(1)
@@ -418,12 +698,70 @@ def _extract_menu_items(html: str) -> list[MenuItem]:
                 description=description,
                 price=price,
                 image_url=image_url,
+                item_id=item_id,
             ))
 
-            if len(menu_items) >= 100:
+            if len(menu_items) >= MENU_ITEM_SAFETY_CAP:
                 break
 
     return menu_items
+
+
+def _extract_menu_items(html: str) -> list[MenuItem]:
+    """Extract menu items with prices from a DoorDash store detail page RSC payload."""
+    return _extract_menu_items_from_text(_extract_rsc_text(html))
+
+
+# The store-page header fee block. The AST decoy only ever holds
+# "deliveryFeeLayout" as a {"kind":"Name","value":...} node, never with this
+# literal data prefix.
+_DELIVERY_FEE_LAYOUT_ANCHOR = '"deliveryFeeLayout":{"__typename":"DeliveryFeeLayout"'
+
+# Every DoorDash store page embeds DashPass marketing copy ("Enjoy up to 12
+# months of $0 delivery fees.") in the RSC blob; a $0-promo match preceded by
+# any of this is an ad, not this store's fee.
+_MARKETING_CONTEXT_RE = re.compile(
+    r"dashpass|months of|free trial|subscri", re.IGNORECASE
+)
+
+
+def _extract_store_header_fees(full_text: str) -> dict:
+    """Delivery fee + promo from the store-page header, ignoring DashPass ads.
+
+    Returns {"delivery_fee": Optional[float], "promo": Optional[str]}.
+    """
+    out: dict = {"delivery_fee": None, "promo": None}
+    if not full_text:
+        return out
+
+    # Primary (2026): the DeliveryFeeLayout header object, brace-matched.
+    idx = full_text.find(_DELIVERY_FEE_LAYOUT_ANCHOR)
+    if idx != -1:
+        layout, _ = _json_value_at(full_text, full_text.index("{", idx))
+        if isinstance(layout, dict):
+            fee_str = layout.get("displayDeliveryFee") or layout.get("title") or ""
+            fee_val = _display_money_to_float(fee_str)
+            if fee_val is not None:
+                out["delivery_fee"] = fee_val
+                if fee_val == 0.0:
+                    # "$$0 delivery fee, first order" -> single-$ display text
+                    out["promo"] = re.sub(r"\$+", "$", fee_str).strip()
+                return out
+
+    # Fallback: bounded $0-delivery snippet scan. The regex itself matches
+    # DashPass marketing all over the blob, so reject any match whose
+    # preceding context reads like an ad rather than this store's header.
+    for fm in re.finditer(
+        r"\$0(?:\.00)?\s+[Dd]elivery\s+[Ff]ees?\b[^\n.]{0,40}", full_text
+    ):
+        context = full_text[max(0, fm.start() - 160):fm.start()]
+        if _MARKETING_CONTEXT_RE.search(context):
+            continue
+        out["delivery_fee"] = 0.0
+        out["promo"] = fm.group(0).strip().rstrip('",;:')
+        break
+
+    return out
 
 
 def _parse_eta(eta_str: Optional[str]) -> int:
@@ -718,8 +1056,25 @@ class DoorDashScraper(BaseScraper):
                 delivery_fee = store.get("delivery_fee", 0.0)
                 service_fee = store.get("service_fee", 0.0)
                 promo = store.get("promo_text")
+                minimum_order = store.get("minimum_order")
+
+                price_range = store.get("price_range")
+                price_bucket = (
+                    "$" * int(price_range)
+                    if isinstance(price_range, int) and 0 < price_range <= 4
+                    else None
+                )
 
                 pickup_eta = max(5, int(eta * 0.5)) if eta else 15
+
+                # DoorDash never exposes the exact service fee pre-checkout;
+                # build_fee_schedule backfills its published 15%/min-$3
+                # structure and marks those fields as estimated.
+                fee_schedule = build_fee_schedule(
+                    "doordash",
+                    delivery_fee=delivery_fee,
+                    minimum_order=minimum_order,
+                )
 
                 results.append(PlatformResult(
                     platform=Platform.DOORDASH,
@@ -728,14 +1083,17 @@ class DoorDashScraper(BaseScraper):
                     restaurant_url=url,
                     delivery_fee=delivery_fee,
                     service_fee=service_fee,
+                    fee_schedule=fee_schedule,
                     estimated_delivery_minutes=eta,
                     pickup_available=True,
                     pickup_fee=0.0,
                     pickup_service_fee=0.0,
                     estimated_pickup_minutes=pickup_eta,
+                    minimum_order=minimum_order,
                     rating=rating,
                     rating_count=rating_count,
                     promo_text=promo,
+                    price_bucket=price_bucket,
                     fetched_at=now,
                 ))
             except Exception as e:
@@ -782,30 +1140,41 @@ class DoorDashScraper(BaseScraper):
             promo = None
 
             if full_text:
-                # Look for fee data in the store detail RSC
-                # Delivery fee
-                for pattern in [
-                    r'"delivery_fee":\s*\{\s*"unit_amount":\s*(\d+)',
-                    r'"deliveryFee":\s*(\d+)',
-                    r'"delivery_fee":(\d+)',
-                ]:
-                    fm = re.search(pattern, full_text)
-                    if fm:
-                        try:
-                            val = int(fm.group(1))
-                            delivery_fee = round(val / 100, 2) if val >= 100 else float(val)
-                            break
-                        except ValueError:
-                            pass
+                # 2026: the DeliveryFeeLayout header object carries the
+                # store's real fee/promo. The DashPass-marketing-aware
+                # fallback inside the helper replaces the old blob-wide $0
+                # scan, which always false-matched "Enjoy up to 12 months of
+                # $0 delivery fees." ad copy.
+                header_fees = _extract_store_header_fees(full_text)
+                if header_fees["delivery_fee"] is not None:
+                    delivery_fee = header_fees["delivery_fee"]
+                if header_fees["promo"]:
+                    promo = header_fees["promo"]
 
-                # Dollar string pattern
-                if delivery_fee == 0.0:
-                    fm = re.search(r'"delivery_fee":\s*\{[^}]*"display_string":"?\$?([\d.]+)', full_text)
-                    if fm:
-                        try:
-                            delivery_fee = round(float(fm.group(1)), 2)
-                        except ValueError:
-                            pass
+                # Legacy fee fields (pre-2026 payloads)
+                if delivery_fee == 0.0 and header_fees["delivery_fee"] is None:
+                    for pattern in [
+                        r'"delivery_fee":\s*\{\s*"unit_amount":\s*(\d+)',
+                        r'"deliveryFee":\s*(\d+)',
+                        r'"delivery_fee":(\d+)',
+                    ]:
+                        fm = re.search(pattern, full_text)
+                        if fm:
+                            try:
+                                val = int(fm.group(1))
+                                delivery_fee = round(val / 100, 2) if val >= 100 else float(val)
+                                break
+                            except ValueError:
+                                pass
+
+                    # Dollar string pattern
+                    if delivery_fee == 0.0:
+                        fm = re.search(r'"delivery_fee":\s*\{[^}]*"display_string":"?\$?([\d.]+)', full_text)
+                        if fm:
+                            try:
+                                delivery_fee = round(float(fm.group(1)), 2)
+                            except ValueError:
+                                pass
 
                 # Service fee
                 for pattern in [
@@ -855,21 +1224,15 @@ class DoorDashScraper(BaseScraper):
                     except ValueError:
                         pass
 
-                # Promo - take a *bounded* match. The earlier unbounded
-                # `[^"]*` slurped up DoorDash's RSC stream legalese and
-                # leaked the whole blob into the response, so we cap at
-                # 80 chars and stop on common sentence terminators.
-                promo_match = re.search(r'"promotion_delivery_fee":"([^"]{1,200})"', full_text)
-                if promo_match:
-                    promo = promo_match.group(1)
-                else:
-                    free_match = re.search(
-                        r'\$0(?:\.00)?\s+[Dd]elivery\s+[Ff]ees?\b[^\n.]{0,40}',
-                        full_text,
-                    )
-                    if free_match:
-                        promo = free_match.group(0).strip().rstrip(",;:")
-                        delivery_fee = 0.0
+                # Named promo field (bounded — the earlier unbounded `[^"]*`
+                # slurped up DoorDash's RSC stream legalese and leaked the
+                # whole blob into the response). The generic $0-delivery
+                # fallback lives in _extract_store_header_fees now, where it
+                # is bounded away from DashPass marketing copy.
+                if promo is None:
+                    promo_match = re.search(r'"promotion_delivery_fee":"([^"]{1,200})"', full_text)
+                    if promo_match:
+                        promo = promo_match.group(1)
 
             # Extract menu items
             menu_items = _extract_menu_items(html)
@@ -906,6 +1269,9 @@ class DoorDashScraper(BaseScraper):
 
             now = datetime.now(timezone.utc).isoformat()
             pickup_eta = max(5, int(eta * 0.5)) if eta else 15
+            # No exact service fee pre-checkout: let build_fee_schedule fill
+            # DoorDash's published 15%/min-$3 estimate (do NOT pass a flat fee).
+            fee_schedule = build_fee_schedule("doordash", delivery_fee=delivery_fee)
             return PlatformResult(
                 platform=Platform.DOORDASH,
                 restaurant_name=name or f"Store {restaurant_id}",
@@ -914,6 +1280,7 @@ class DoorDashScraper(BaseScraper):
                 menu_items=menu_items,
                 delivery_fee=delivery_fee,
                 service_fee=service_fee,
+                fee_schedule=fee_schedule,
                 estimated_delivery_minutes=eta,
                 pickup_available=True,
                 pickup_fee=0.0,

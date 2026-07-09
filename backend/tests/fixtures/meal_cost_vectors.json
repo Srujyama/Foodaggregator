@@ -1,0 +1,418 @@
+[
+ {
+  "name": "doordash-typical-25",
+  "schedule": {
+   "delivery_fee": 1.99,
+   "service_fee_pct": 15.0,
+   "service_fee_flat": null,
+   "service_fee_min": 3.0,
+   "service_fee_max": null,
+   "small_order_fee": 2.5,
+   "small_order_threshold": 10.0,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ],
+   "notes": []
+  },
+  "subtotal": 25.0,
+  "expected": {
+   "subtotal": 25.0,
+   "delivery_fee": 1.99,
+   "service_fee": 3.75,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": null,
+   "tax": 0.0,
+   "total": 30.74,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ]
+  }
+ },
+ {
+  "name": "doordash-small-basket-8",
+  "schedule": {
+   "delivery_fee": 1.99,
+   "service_fee_pct": 15.0,
+   "service_fee_flat": null,
+   "service_fee_min": 3.0,
+   "service_fee_max": null,
+   "small_order_fee": 2.5,
+   "small_order_threshold": 10.0,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ],
+   "notes": []
+  },
+  "subtotal": 8.0,
+  "expected": {
+   "subtotal": 8.0,
+   "delivery_fee": 1.99,
+   "service_fee": 3.0,
+   "small_order_fee": 2.5,
+   "tax_rate_pct": null,
+   "tax": 0.0,
+   "total": 15.49,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ]
+  }
+ },
+ {
+  "name": "uber-with-ca-tax",
+  "schedule": {
+   "delivery_fee": 2.49,
+   "service_fee_pct": 15.0,
+   "service_fee_flat": null,
+   "service_fee_min": 2.0,
+   "service_fee_max": null,
+   "small_order_fee": 2.0,
+   "small_order_threshold": 10.0,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ],
+   "notes": []
+  },
+  "subtotal": 30.0,
+  "expected": {
+   "subtotal": 30.0,
+   "delivery_fee": 2.49,
+   "service_fee": 4.5,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": 9.25,
+   "tax": 2.77,
+   "total": 39.76,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold",
+    "tax_rate_pct"
+   ]
+  },
+  "fallback_tax_rate_pct": 9.25
+ },
+ {
+  "name": "grubhub-exact-pct-floor",
+  "schedule": {
+   "delivery_fee": 0.99,
+   "service_fee_pct": 10.35,
+   "service_fee_flat": null,
+   "service_fee_min": 2.25,
+   "service_fee_max": 9.0,
+   "small_order_fee": null,
+   "small_order_threshold": null,
+   "minimum_order": 15.0,
+   "tax_rate_pct": null,
+   "estimated_fields": [],
+   "notes": []
+  },
+  "subtotal": 12.0,
+  "expected": {
+   "subtotal": 12.0,
+   "delivery_fee": 0.99,
+   "service_fee": 2.25,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": null,
+   "tax": 0.0,
+   "total": 15.24,
+   "below_minimum": true,
+   "minimum_order": 15.0,
+   "estimated_fields": []
+  }
+ },
+ {
+  "name": "grubhub-exact-pct-cap",
+  "schedule": {
+   "delivery_fee": 0.99,
+   "service_fee_pct": 10.35,
+   "service_fee_flat": null,
+   "service_fee_min": 2.25,
+   "service_fee_max": 9.0,
+   "small_order_fee": null,
+   "small_order_threshold": null,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [],
+   "notes": []
+  },
+  "subtotal": 120.0,
+  "expected": {
+   "subtotal": 120.0,
+   "delivery_fee": 0.99,
+   "service_fee": 9.0,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": null,
+   "tax": 0.0,
+   "total": 129.99,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": []
+  }
+ },
+ {
+  "name": "flat-service-fee-only",
+  "schedule": {
+   "delivery_fee": 3.49,
+   "service_fee_pct": null,
+   "service_fee_flat": 2.25,
+   "service_fee_min": null,
+   "service_fee_max": null,
+   "small_order_fee": null,
+   "small_order_threshold": null,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [],
+   "notes": []
+  },
+  "subtotal": 40.0,
+  "expected": {
+   "subtotal": 40.0,
+   "delivery_fee": 3.49,
+   "service_fee": 2.25,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": null,
+   "tax": 0.0,
+   "total": 45.74,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": []
+  }
+ },
+ {
+  "name": "no-fee-data-at-all",
+  "schedule": {
+   "delivery_fee": 3.49,
+   "service_fee_pct": null,
+   "service_fee_flat": null,
+   "service_fee_min": null,
+   "service_fee_max": null,
+   "small_order_fee": null,
+   "small_order_threshold": null,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [],
+   "notes": []
+  },
+  "subtotal": 20.0,
+  "expected": {
+   "subtotal": 20.0,
+   "delivery_fee": 3.49,
+   "service_fee": null,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": null,
+   "tax": 0.0,
+   "total": 23.49,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": []
+  }
+ },
+ {
+  "name": "platform-tax-beats-fallback",
+  "schedule": {
+   "delivery_fee": 0.0,
+   "service_fee_pct": null,
+   "service_fee_flat": null,
+   "service_fee_min": null,
+   "service_fee_max": null,
+   "small_order_fee": null,
+   "small_order_threshold": null,
+   "minimum_order": null,
+   "tax_rate_pct": 6.0,
+   "estimated_fields": [],
+   "notes": []
+  },
+  "subtotal": 10.0,
+  "expected": {
+   "subtotal": 10.0,
+   "delivery_fee": 0.0,
+   "service_fee": null,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": 6.0,
+   "tax": 0.6,
+   "total": 10.6,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": []
+  },
+  "fallback_tax_rate_pct": 9.25
+ },
+ {
+  "name": "pickup-drops-basket-fees",
+  "schedule": {
+   "delivery_fee": 1.99,
+   "service_fee_pct": 15.0,
+   "service_fee_flat": null,
+   "service_fee_min": 3.0,
+   "service_fee_max": null,
+   "small_order_fee": 2.5,
+   "small_order_threshold": 10.0,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ],
+   "notes": []
+  },
+  "subtotal": 20.0,
+  "expected": {
+   "subtotal": 20.0,
+   "delivery_fee": 0.0,
+   "service_fee": 0.0,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": 8.0,
+   "tax": 1.6,
+   "total": 21.6,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold",
+    "tax_rate_pct"
+   ]
+  },
+  "mode": "pickup",
+  "fallback_tax_rate_pct": 8.0
+ },
+ {
+  "name": "uber-small-basket-floor-and-small-order",
+  "schedule": {
+   "delivery_fee": 0.49,
+   "service_fee_pct": 15.0,
+   "service_fee_flat": null,
+   "service_fee_min": 2.0,
+   "service_fee_max": null,
+   "small_order_fee": 2.0,
+   "small_order_threshold": 10.0,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ],
+   "notes": []
+  },
+  "subtotal": 9.5,
+  "expected": {
+   "subtotal": 9.5,
+   "delivery_fee": 0.49,
+   "service_fee": 2.0,
+   "small_order_fee": 2.0,
+   "tax_rate_pct": 8.875,
+   "tax": 0.84,
+   "total": 14.83,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold",
+    "tax_rate_pct"
+   ]
+  },
+  "fallback_tax_rate_pct": 8.875
+ },
+ {
+  "name": "zero-subtotal",
+  "schedule": {
+   "delivery_fee": 1.99,
+   "service_fee_pct": 15.0,
+   "service_fee_flat": null,
+   "service_fee_min": 3.0,
+   "service_fee_max": null,
+   "small_order_fee": 2.5,
+   "small_order_threshold": 10.0,
+   "minimum_order": null,
+   "tax_rate_pct": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ],
+   "notes": []
+  },
+  "subtotal": 0.0,
+  "expected": {
+   "subtotal": 0.0,
+   "delivery_fee": 1.99,
+   "service_fee": 3.0,
+   "small_order_fee": 2.5,
+   "tax_rate_pct": null,
+   "tax": 0.0,
+   "total": 7.49,
+   "below_minimum": false,
+   "minimum_order": null,
+   "estimated_fields": [
+    "service_fee_pct",
+    "service_fee_min",
+    "small_order_fee",
+    "small_order_threshold"
+   ]
+  }
+ },
+ {
+  "name": "below-minimum-flagged",
+  "schedule": {
+   "delivery_fee": 0.0,
+   "service_fee_pct": 10.0,
+   "service_fee_flat": null,
+   "service_fee_min": null,
+   "service_fee_max": null,
+   "small_order_fee": null,
+   "small_order_threshold": null,
+   "minimum_order": 15.0,
+   "tax_rate_pct": null,
+   "estimated_fields": [],
+   "notes": []
+  },
+  "subtotal": 10.0,
+  "expected": {
+   "subtotal": 10.0,
+   "delivery_fee": 0.0,
+   "service_fee": 1.0,
+   "small_order_fee": 0.0,
+   "tax_rate_pct": null,
+   "tax": 0.0,
+   "total": 11.0,
+   "below_minimum": true,
+   "minimum_order": 15.0,
+   "estimated_fields": []
+  }
+ }
+]

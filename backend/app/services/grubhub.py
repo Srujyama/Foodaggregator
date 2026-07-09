@@ -23,6 +23,7 @@ import httpx
 from curl_cffi import requests as cffi_requests
 
 from app.models.food import MenuItem, Platform, PlatformResult
+from app.services.pricing import build_fee_schedule
 from app.services.scraper_base import BaseScraper, geocode
 
 logger = logging.getLogger(__name__)
@@ -297,16 +298,68 @@ def _parse_restaurant(restaurant: dict) -> dict:
             except (ValueError, TypeError):
                 delivery_fee = 0.0
 
+    # Grubhub's service fee block carries the EXACT schedule (verified live
+    # July 2026 against search_listing for Berkeley, CA):
+    #   price_response.delivery_response.service_fee = {
+    #     "flat_cents": 0,            # flat component / floor, cents
+    #     "basis_points": 1250,       # 12.50% of subtotal
+    #     "maximum_flat_amount": 900, # cap, cents ($9.00)
+    #     "minimum_flat_amount": null,# floor, cents (when present)
+    #     "zero": false, "flat": false, "percent": true, ...}
+    # The legacy flat `service_fee` float below only surfaces flat_cents
+    # (other code ranks on it — keep that behavior exactly); the full
+    # pct/floor/cap structure goes into the FeeSchedule fields.
+    service_fee_pct = None
+    service_fee_min = None
+    service_fee_max = None
     sf_obj = delivery_response.get("service_fee") or {}
     if isinstance(sf_obj, dict):
-        # Grubhub's service fee is % of subtotal (basis_points) with a flat
-        # floor/ceiling. Without a subtotal to anchor against, we can only
-        # surface the flat component. Ignore the cap — it overstates the fee
-        # for typical orders.
         flat_cents = sf_obj.get("flat_cents") or 0
         try:
             if flat_cents and flat_cents > 0:
                 service_fee_val = round(float(flat_cents) / 100, 2)
+                service_fee_min = service_fee_val
+        except (ValueError, TypeError):
+            pass
+        try:
+            bp = sf_obj.get("basis_points")
+            if bp and float(bp) > 0:
+                service_fee_pct = round(float(bp) / 100, 2)
+        except (ValueError, TypeError):
+            pass
+        if service_fee_min is None:
+            try:
+                min_flat = sf_obj.get("minimum_flat_amount")
+                if min_flat and float(min_flat) > 0:
+                    service_fee_min = round(float(min_flat) / 100, 2)
+            except (ValueError, TypeError):
+                pass
+        try:
+            max_flat = sf_obj.get("maximum_flat_amount")
+            if max_flat and float(max_flat) > 0:
+                service_fee_max = round(float(max_flat) / 100, 2)
+        except (ValueError, TypeError):
+            pass
+
+    # A flat-only fee (flat_cents > 0, no positive basis_points) is Grubhub's
+    # EXACT flat service fee, not a floor under some percentage — carrying it
+    # as service_fee_min would let build_fee_schedule graft the estimated 10%
+    # default on top of an exact number.
+    service_fee_flat = None
+    if service_fee_pct is None and service_fee_min is not None:
+        service_fee_flat = service_fee_min
+        service_fee_min = None
+
+    # `small_order_fee` sits next to service_fee on every delivery_response
+    # but was null on all 40 live listings probed (July 2026). Parse a
+    # service_fee-shaped dict defensively in case it ever materializes.
+    small_order_fee = None
+    so_obj = delivery_response.get("small_order_fee")
+    if isinstance(so_obj, dict):
+        try:
+            so_cents = so_obj.get("flat_cents") or 0
+            if float(so_cents) > 0:
+                small_order_fee = round(float(so_cents) / 100, 2)
         except (ValueError, TypeError):
             pass
 
@@ -406,6 +459,11 @@ def _parse_restaurant(restaurant: dict) -> dict:
         "restaurant_id": rest_id,
         "delivery_fee": delivery_fee,
         "service_fee": service_fee_val,
+        "service_fee_pct": service_fee_pct,
+        "service_fee_flat": service_fee_flat,
+        "service_fee_min": service_fee_min,
+        "service_fee_max": service_fee_max,
+        "small_order_fee": small_order_fee,
         "eta": eta,
         "rating": rating,
         "rating_count": rating_count,
@@ -422,15 +480,17 @@ def _parse_restaurant(restaurant: dict) -> dict:
     }
 
 
-def _parse_menu_item(item: dict) -> Optional[MenuItem]:
+def _parse_menu_item(item: dict, section: Optional[str] = None) -> Optional[MenuItem]:
     name = item.get("name", "")
     if not name or len(name) < 2:
         return None
 
+    # Zero-price items are kept at 0.0: real menus carry legitimate $0
+    # entries (sauce packets, included sides — 13 of a live Taco Bell's 211
+    # items) that the old `price <= 0 -> drop` rule silently hid.
     price = _money_value(item.get("price"))
-
-    if price <= 0:
-        return None
+    if price < 0:
+        price = 0.0
 
     description = item.get("description") or None
     if description and len(description) < 3:
@@ -441,12 +501,58 @@ def _parse_menu_item(item: dict) -> Optional[MenuItem]:
     if isinstance(media, dict):
         image_url = media.get("base_url") or media.get("url")
 
+    raw_id = item.get("id")
+    item_id = str(raw_id) if raw_id not in (None, "") else None
+
+    # Detail-payload items carry a bool 'available' (verified live: sold-out
+    # items are available=false). Anything else stays None (= unknown).
+    available = item.get("available")
+    is_available = available if isinstance(available, bool) else None
+
     return MenuItem(
         name=name,
         description=description,
         price=round(price, 2),
         image_url=image_url,
+        section=section,
+        item_id=item_id,
+        is_available=is_available,
     )
+
+
+# Hard safety bound on total menu items parsed per restaurant. The old
+# 30-per-category / 60-total caps hid most real menus (a live Berkeley
+# Taco Bell carries 211 items across 17 categories); 2000 covers any real
+# menu while still bounding pathological payloads.
+MAX_MENU_ITEMS = 2000
+
+
+def _parse_menu(restaurant: dict) -> list[MenuItem]:
+    """Parse the FULL menu (with sections) from a /restaurants/{id} payload.
+
+    Verified live (July 2026): restaurant.menu_category_list[] entries carry
+    keys ['available', 'id', 'menu_category_id', 'menu_item_list', 'name',
+    'sequence']; each menu_item_list[] entry carries 'id', 'name', 'price'
+    ({"amount": <cents>, "styled_text": ...}), 'description', 'available'.
+    """
+    menu_items: list[MenuItem] = []
+    seen_ids: set = set()
+    for category in (restaurant.get("menu_category_list") or []):
+        section = category.get("name")
+        if section is not None:
+            section = str(section).strip() or None
+        for item in (category.get("menu_item_list") or []):
+            if len(menu_items) >= MAX_MENU_ITEMS:
+                return menu_items
+            item_id = str(item.get("id", ""))
+            if item_id and item_id in seen_ids:
+                continue
+            mi = _parse_menu_item(item, section=section)
+            if mi:
+                if item_id:
+                    seen_ids.add(item_id)
+                menu_items.append(mi)
+    return menu_items
 
 
 GH_WEB_SEARCH = "https://www.grubhub.com/search"
@@ -757,6 +863,20 @@ class GrubhubScraper(BaseScraper):
                     restaurant_url=rd["url"],
                     delivery_fee=rd["delivery_fee"],
                     service_fee=rd["service_fee"],
+                    # API payloads carry Grubhub's exact schedule (basis
+                    # points + floor + cap); when the service_fee block is
+                    # missing, build_fee_schedule backfills the published
+                    # defaults and labels them in estimated_fields.
+                    fee_schedule=build_fee_schedule(
+                        "grubhub",
+                        delivery_fee=rd["delivery_fee"],
+                        service_fee_pct=rd["service_fee_pct"],
+                        service_fee_flat=rd["service_fee_flat"],
+                        service_fee_min=rd["service_fee_min"],
+                        service_fee_max=rd["service_fee_max"],
+                        small_order_fee=rd["small_order_fee"],
+                        minimum_order=rd["minimum_order"],
+                    ),
                     estimated_delivery_minutes=eta,
                     pickup_available=True,
                     pickup_fee=0.0,
@@ -777,7 +897,14 @@ class GrubhubScraper(BaseScraper):
         return parsed
 
     def _build_results_from_raw(self, raw_restaurants: list[dict]) -> list[PlatformResult]:
-        """Build PlatformResult list from web-scraped raw dicts."""
+        """Build PlatformResult list from web-scraped raw dicts.
+
+        Deliberately attaches NO fee_schedule: the web-scrape extractors
+        fabricate delivery_fee=0 and carry no service-fee data, so a schedule
+        built here would launder made-up numbers as scraped ones. The
+        aggregator's ensure_fee_schedule() fallback fills in the published
+        defaults (labeled estimated) instead.
+        """
         parsed = []
         now = datetime.now(timezone.utc).isoformat()
         for restaurant in raw_restaurants:
@@ -834,28 +961,80 @@ class GrubhubScraper(BaseScraper):
                 data = resp.json()
 
             restaurant = data.get("restaurant") or data
+            availability = data.get("restaurant_availability") or {}
             now = datetime.now(timezone.utc).isoformat()
 
-            menu_items = []
-            seen_ids: set = set()
-            for category in (restaurant.get("menu_category_list") or []):
-                for item in (category.get("menu_item_list") or [])[:30]:
-                    item_id = str(item.get("id", ""))
-                    if item_id and item_id in seen_ids:
-                        continue
-                    mi = _parse_menu_item(item)
-                    if mi:
-                        if item_id:
-                            seen_ids.add(item_id)
-                        menu_items.append(mi)
-                    if len(menu_items) >= 60:
-                        break
-                if len(menu_items) >= 60:
-                    break
+            menu_items = _parse_menu(restaurant)
 
             rd = _parse_restaurant(restaurant)
             eta = rd["eta"]
             pickup_eta = max(5, int(eta * 0.5)) if eta else 15
+
+            # The detail endpoint keeps fee data OUT of the restaurant object
+            # (no price_response there) and puts the exact schedule on the
+            # sibling restaurant_availability object (verified live July 2026):
+            #   restaurant_availability.service_fee.delivery_fee =
+            #     {"fee_type": "PERCENT", "percent_value": 12.5,
+            #      "maximum_amount_for_percent": {"amount": 900,  # cents
+            #       "currency": "USD"}}
+            #   restaurant_availability.sales_tax = 10.25   # % — pre-checkout!
+            #   restaurant_availability.order_minimum = {"amount": <cents>}
+            #   restaurant_availability.delivery_fee = {"amount": <cents>}
+            sf_pct = rd["service_fee_pct"]
+            sf_flat = rd["service_fee_flat"]
+            sf_min = rd["service_fee_min"]
+            sf_max = rd["service_fee_max"]
+            avail_sf = availability.get("service_fee")
+            sf_delivery = (
+                avail_sf.get("delivery_fee") if isinstance(avail_sf, dict) else None
+            )
+            if isinstance(sf_delivery, dict):
+                try:
+                    pv = sf_delivery.get("percent_value")
+                    if pv is not None and float(pv) > 0:
+                        sf_pct = round(float(pv), 2)
+                except (ValueError, TypeError):
+                    pass
+                if sf_max is None:
+                    cap = _money_value(sf_delivery.get("maximum_amount_for_percent"))
+                    if cap > 0:
+                        sf_max = cap
+                if sf_min is None:
+                    floor = _money_value(sf_delivery.get("minimum_amount_for_percent"))
+                    if floor > 0:
+                        sf_min = floor
+
+            tax_rate_pct = None
+            try:
+                sales_tax = availability.get("sales_tax")
+                # 0 is exact data (Delaware et al. have no sales tax), not
+                # absence — dropping it would make the UI estimate a wrong
+                # nonzero rate instead.
+                if sales_tax is not None and float(sales_tax) >= 0:
+                    tax_rate_pct = round(float(sales_tax), 3)
+            except (ValueError, TypeError):
+                pass
+
+            sched_delivery_fee = rd["delivery_fee"] or _money_value(
+                availability.get("delivery_fee")
+            )
+            minimum_order = rd["minimum_order"] or (
+                _money_value(availability.get("order_minimum")) or None
+            )
+
+            fee_schedule = build_fee_schedule(
+                "grubhub",
+                delivery_fee=sched_delivery_fee,
+                service_fee_pct=sf_pct,
+                # An exact flat fee only counts when no % emerged from either
+                # the search block or the availability object.
+                service_fee_flat=sf_flat if sf_pct is None else None,
+                service_fee_min=sf_min,
+                service_fee_max=sf_max,
+                small_order_fee=rd["small_order_fee"],
+                minimum_order=minimum_order,
+                tax_rate_pct=tax_rate_pct,
+            )
 
             return PlatformResult(
                 platform=Platform.GRUBHUB,
@@ -865,12 +1044,13 @@ class GrubhubScraper(BaseScraper):
                 menu_items=menu_items,
                 delivery_fee=rd["delivery_fee"],
                 service_fee=rd["service_fee"],
+                fee_schedule=fee_schedule,
                 estimated_delivery_minutes=eta,
                 pickup_available=True,
                 pickup_fee=0.0,
                 pickup_service_fee=0.0,
                 estimated_pickup_minutes=pickup_eta,
-                minimum_order=rd["minimum_order"],
+                minimum_order=minimum_order,
                 rating=rd["rating"],
                 rating_count=rd["rating_count"],
                 promo_text=rd["promo"],

@@ -178,7 +178,7 @@ def _parse_restaurant(restaurant: dict) -> dict:
     }
 
 
-def _parse_menu_item(item: dict) -> Optional[MenuItem]:
+def _parse_menu_item(item: dict, section: Optional[str] = None) -> Optional[MenuItem]:
     name = item.get("name", "")
     if not name or len(name) < 2:
         return None
@@ -187,8 +187,10 @@ def _parse_menu_item(item: dict) -> Optional[MenuItem]:
         price = _cents_to_dollars(price_obj.get("amount", 0))
     else:
         price = _cents_to_dollars(price_obj)
-    if price <= 0:
-        return None
+    # Keep zero-price items (mirrors grubhub.py — real menus carry $0
+    # entries like sauce packets).
+    if price < 0:
+        price = 0.0
     description = item.get("description") or None
     if description and len(description) < 3:
         description = None
@@ -196,7 +198,49 @@ def _parse_menu_item(item: dict) -> Optional[MenuItem]:
     media = item.get("media_image", {})
     if isinstance(media, dict):
         image_url = media.get("base_url") or media.get("url")
-    return MenuItem(name=name, description=description, price=round(price, 2), image_url=image_url)
+    raw_id = item.get("id")
+    item_id = str(raw_id) if raw_id not in (None, "") else None
+    available = item.get("available")
+    is_available = available if isinstance(available, bool) else None
+    return MenuItem(
+        name=name,
+        description=description,
+        price=round(price, 2),
+        image_url=image_url,
+        section=section,
+        item_id=item_id,
+        is_available=is_available,
+    )
+
+
+# Mirrors grubhub.MAX_MENU_ITEMS — same backend, same payload shapes.
+MAX_MENU_ITEMS = 2000
+
+
+def _parse_menu(restaurant: dict) -> list[MenuItem]:
+    """Parse the full menu (with sections) from menu_category_list.
+
+    Same shape as Grubhub's detail payload: categories carry 'name', items
+    carry 'id'/'name'/'price'/'available'.
+    """
+    menu_items: list[MenuItem] = []
+    seen_ids: set = set()
+    for category in (restaurant.get("menu_category_list") or []):
+        section = category.get("name")
+        if section is not None:
+            section = str(section).strip() or None
+        for item in (category.get("menu_item_list") or []):
+            if len(menu_items) >= MAX_MENU_ITEMS:
+                return menu_items
+            item_id = str(item.get("id", ""))
+            if item_id and item_id in seen_ids:
+                continue
+            mi = _parse_menu_item(item, section=section)
+            if mi:
+                if item_id:
+                    seen_ids.add(item_id)
+                menu_items.append(mi)
+    return menu_items
 
 
 def _scrape_search_page(query: str, lat: float, lng: float) -> list[dict]:
@@ -439,16 +483,7 @@ class SeamlessScraper(BaseScraper):
             restaurant = data.get("restaurant") or data
             now = datetime.now(timezone.utc).isoformat()
 
-            menu_items = []
-            for category in (restaurant.get("menu_category_list") or []):
-                for item in (category.get("menu_item_list") or [])[:30]:
-                    mi = _parse_menu_item(item)
-                    if mi:
-                        menu_items.append(mi)
-                    if len(menu_items) >= 50:
-                        break
-                if len(menu_items) >= 50:
-                    break
+            menu_items = _parse_menu(restaurant)
 
             rd = _parse_restaurant(restaurant)
             eta = rd["eta"]

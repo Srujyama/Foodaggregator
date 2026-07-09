@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import MenuComparison from './MenuComparison.jsx'
@@ -92,6 +92,29 @@ describe('MenuComparison filtering', () => {
     for (const name of ALL_NAMES) {
       expect(screen.getByText(name)).toBeInTheDocument()
     }
+  })
+
+  it('renders no Add buttons when onAdd is absent (backward compatible)', () => {
+    setup()
+    expect(screen.queryByRole('button', { name: /add .* to meal/i })).toBeNull()
+  })
+
+  it('calls onAdd with the full row when a row Add button is clicked', async () => {
+    const onAdd = vi.fn()
+    render(
+      <MenuComparison
+        menuComparison={menuComparison}
+        platforms={platforms}
+        avgMarkup={null}
+        onAdd={onAdd}
+      />,
+    )
+    const user = userEvent.setup()
+    await user.click(
+      screen.getByRole('button', { name: /add cheeseburger to meal/i }),
+    )
+    expect(onAdd).toHaveBeenCalledTimes(1)
+    expect(onAdd).toHaveBeenCalledWith(menuComparison[0])
   })
 
   it('updates the footer count to reflect the filtered rows', async () => {

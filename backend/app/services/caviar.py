@@ -19,7 +19,18 @@ from urllib.parse import quote
 from curl_cffi import requests as cffi_requests
 
 from app.models.food import MenuItem, Platform, PlatformResult
+from app.services.pricing import build_fee_schedule
 from app.services.scraper_base import BaseScraper, geocode
+
+# Caviar is DoorDash's premium surface and streams the exact same 2026 RSC
+# shapes (MenuPageItemList menu blocks, T-row search records,
+# DeliveryFeeLayout header). Reuse DoorDash's brace-matched parsers rather
+# than fork a second copy that would drift.
+from app.services.doordash import (
+    _extract_menu_items_from_text as _dd_extract_menu_items_from_text,
+    _extract_store_header_fees as _dd_extract_store_header_fees,
+    _stores_from_search_records as _dd_stores_from_search_records,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +116,17 @@ def _extract_stores(html: str) -> list[dict]:
     full_text = _extract_rsc_text(html)
     if not full_text:
         return []
+
+    # 2026 payload: complete store records stream as RSC text rows; parse
+    # them brace-matched (same shape as DoorDash). The regex-window path
+    # below only remains for older payloads.
+    stores = _dd_stores_from_search_records(full_text)
+    if stores:
+        logger.info(f"[Caviar] {len(stores)} stores via 2026 search records")
+        for store in stores:
+            # Caviar's legacy store dicts use "eta" for the display time.
+            store["eta"] = store.get("store_display_asap_time")
+        return stores
 
     stores = []
     seen_ids: set = set()
@@ -228,52 +250,17 @@ def _extract_stores(html: str) -> list[dict]:
 
 
 def _extract_menu_items(html: str) -> list[MenuItem]:
-    """Extract menu items from a Caviar store page."""
+    """Extract menu items from a Caviar store page.
+
+    Caviar streams the identical 2026 RSC shape as DoorDash, so this returns
+    the full menu (all MenuPageItemList sections, item ids, cents prices) via
+    the shared parser, which itself falls back to the legacy carousel /
+    item_id shapes when the new blocks are absent.
+    """
     full_text = _extract_rsc_text(html)
     if not full_text:
         return []
-
-    items = []
-    seen = set()
-
-    for m in re.finditer(r'StorePageCarouselItem","id":"(\d+)","name":"([^"]+)"', full_text):
-        item_id, item_name = m.group(1), m.group(2)
-        if item_id in seen or not item_name or item_name.lower() in seen:
-            continue
-
-        window = full_text[m.end():m.end() + 800]
-
-        desc_match = re.search(r'"description":"([^"]{0,500})"', window)
-        description = desc_match.group(1) if desc_match else None
-
-        price = 0.0
-        price_match = re.search(r'"displayPrice":"\$*(\d+\.?\d*)"', window)
-        if price_match:
-            try:
-                price = round(float(price_match.group(1)), 2)
-            except ValueError:
-                pass
-
-        if price == 0.0:
-            unit_match = re.search(r'"unitAmount":(\d+)', window)
-            if unit_match:
-                val = int(unit_match.group(1))
-                price = round(val / 100, 2) if val >= 100 else float(val)
-
-        if price <= 0:
-            continue
-
-        img_match = re.search(r'"imgUrl":"(https?://[^"]+)"', window)
-        image_url = img_match.group(1) if img_match else None
-
-        seen.add(item_id)
-        seen.add(item_name.lower())
-        items.append(MenuItem(name=item_name, description=description, price=price, image_url=image_url))
-
-        if len(items) >= 100:
-            break
-
-    return items
+    return _dd_extract_menu_items_from_text(full_text)
 
 
 def _parse_eta(eta_str: Optional[str]) -> int:
@@ -368,21 +355,43 @@ class CaviarScraper(BaseScraper):
                 eta = _parse_eta(store.get("eta"))
                 pickup_eta = max(5, int(eta * 0.5)) if eta else 15
 
+                delivery_fee = store.get("delivery_fee", 0.0)
+                minimum_order = store.get("minimum_order")
+
+                price_range = store.get("price_range")
+                price_bucket = (
+                    "$" * int(price_range)
+                    if isinstance(price_range, int) and 0 < price_range <= 4
+                    else None
+                )
+
+                # Caviar (DoorDash backend) never exposes the exact service
+                # fee pre-checkout; build_fee_schedule backfills the
+                # published 15%/min-$3 structure as estimated fields.
+                fee_schedule = build_fee_schedule(
+                    "caviar",
+                    delivery_fee=delivery_fee,
+                    minimum_order=minimum_order,
+                )
+
                 results.append(PlatformResult(
                     platform=Platform.CAVIAR,
                     restaurant_name=name,
                     restaurant_id=store_id,
                     restaurant_url=f"https://www.trycaviar.com/store/{store_id}/",
-                    delivery_fee=store.get("delivery_fee", 0.0),
+                    delivery_fee=delivery_fee,
                     service_fee=store.get("service_fee", 0.0),
+                    fee_schedule=fee_schedule,
                     estimated_delivery_minutes=eta,
                     pickup_available=True,
                     pickup_fee=0.0,
                     pickup_service_fee=0.0,
                     estimated_pickup_minutes=pickup_eta,
+                    minimum_order=minimum_order,
                     rating=rating,
                     rating_count=store.get("num_ratings"),
                     promo_text=store.get("promo_text"),
+                    price_bucket=price_bucket,
                     fetched_at=now,
                 ))
             except Exception as e:
@@ -427,18 +436,28 @@ class CaviarScraper(BaseScraper):
             eta = 30
             rating = None
             rating_count = None
+            promo = None
 
             if full_text:
-                for pattern in [
-                    r'"delivery_fee":\s*\{\s*"unit_amount":\s*(\d+)',
-                    r'"deliveryFee":\s*(\d+)',
-                    r'"delivery_fee":(\d+)',
-                ]:
-                    fm = re.search(pattern, full_text)
-                    if fm:
-                        val = int(fm.group(1))
-                        delivery_fee = round(val / 100, 2) if val >= 100 else float(val)
-                        break
+                # 2026: fee/promo from the DeliveryFeeLayout store header,
+                # bounded away from DashPass marketing copy (shared parser).
+                header_fees = _dd_extract_store_header_fees(full_text)
+                if header_fees["delivery_fee"] is not None:
+                    delivery_fee = header_fees["delivery_fee"]
+                if header_fees["promo"]:
+                    promo = header_fees["promo"]
+
+                if delivery_fee == 0.0 and header_fees["delivery_fee"] is None:
+                    for pattern in [
+                        r'"delivery_fee":\s*\{\s*"unit_amount":\s*(\d+)',
+                        r'"deliveryFee":\s*(\d+)',
+                        r'"delivery_fee":(\d+)',
+                    ]:
+                        fm = re.search(pattern, full_text)
+                        if fm:
+                            val = int(fm.group(1))
+                            delivery_fee = round(val / 100, 2) if val >= 100 else float(val)
+                            break
 
                 for pattern in [
                     r'"service_fee":\s*\{\s*"unit_amount":\s*(\d+)',
@@ -466,6 +485,10 @@ class CaviarScraper(BaseScraper):
             now = datetime.now(timezone.utc).isoformat()
             pickup_eta = max(5, int(eta * 0.5))
 
+            # No exact service fee pre-checkout: let build_fee_schedule fill
+            # the published 15%/min-$3 estimate (do NOT pass a flat fee).
+            fee_schedule = build_fee_schedule("caviar", delivery_fee=delivery_fee)
+
             return PlatformResult(
                 platform=Platform.CAVIAR,
                 restaurant_name=name or f"Store {restaurant_id}",
@@ -474,6 +497,7 @@ class CaviarScraper(BaseScraper):
                 menu_items=menu_items,
                 delivery_fee=delivery_fee,
                 service_fee=service_fee,
+                fee_schedule=fee_schedule,
                 estimated_delivery_minutes=eta,
                 pickup_available=True,
                 pickup_fee=0.0,
@@ -481,6 +505,7 @@ class CaviarScraper(BaseScraper):
                 estimated_pickup_minutes=pickup_eta,
                 rating=rating,
                 rating_count=rating_count,
+                promo_text=promo,
                 fetched_at=now,
             )
         except Exception as e:

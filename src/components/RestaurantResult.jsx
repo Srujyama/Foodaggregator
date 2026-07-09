@@ -237,7 +237,7 @@ export default function RestaurantResult({ result }) {
             <ChevronDown className={cn('w-4 h-4 transition-transform', showMenu && 'rotate-180')} />
           </button>
           <Link
-            to={`/restaurant/${slugify(result.restaurant_name)}?location=${encodeURIComponent(location)}&name=${encodeURIComponent(result.restaurant_name)}`}
+            to={`/restaurant/${slugify(result.restaurant_name)}?location=${encodeURIComponent(location)}&name=${encodeURIComponent(result.restaurant_name)}&mode=${mode}`}
             className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-xl bg-gradient-to-r from-orange-50 to-red-50 border border-orange-200 text-sm font-semibold text-orange-600 hover:from-orange-100 hover:to-red-100 transition-all duration-200"
           >
             Full Details

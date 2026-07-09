@@ -224,9 +224,37 @@ def test_parse_store_detail_taco_bell_full(uber_store_tacobell):
     assert res.allergen_disclaimer_html
     assert "<span>" in res.allergen_disclaimer_html.lower() or "<a" in res.allergen_disclaimer_html.lower()
 
-    # Menu items got pulled out and have positive prices.
-    assert res.menu_items
-    assert all(m.price > 0 for m in res.menu_items)
+    # FULL menu got pulled out: the fixture holds 151+ unique items across
+    # 19 sections (old parser capped at 100 and deduped by name globally).
+    assert len(res.menu_items) >= 150
+    assert all(m.price >= 0 for m in res.menu_items)
+    # Real prices are the norm; free items (sauce packets) are the exception.
+    assert sum(1 for m in res.menu_items if m.price > 0) >= 140
+
+    # Every item carries its menu section and platform item id.
+    assert all(m.section for m in res.menu_items)
+    assert all(m.item_id for m in res.menu_items)
+    sections = {m.section for m in res.menu_items}
+    assert any("Burritos" in s for s in sections)
+    # Two menus (Lunch/Dinner + Breakfast) -> breakfast sections are prefixed.
+    assert any(s.startswith("Breakfast · ") for s in sections)
+
+    # Same-named items in different sections survive (per-uuid dedupe), but
+    # no uuid appears twice.
+    ids = [m.item_id for m in res.menu_items]
+    assert len(ids) == len(set(ids))
+
+    # Availability flag came through.
+    assert all(m.is_available is True for m in res.menu_items[:5])
+
+    # Fee schedule: Uber doesn't expose its service fee pre-checkout, so the
+    # published 15% estimate fills in and is labeled as an estimate.
+    fs = res.fee_schedule
+    assert fs is not None
+    assert fs.service_fee_pct == 15.0
+    assert "service_fee_pct" in fs.estimated_fields
+    # The fixture's DELIVERY modality option says " $0 delivery fee".
+    assert fs.delivery_fee == 0.0
 
     # ETA min <= max invariant
     if res.estimated_delivery_minutes_max is not None:
@@ -236,3 +264,59 @@ def test_parse_store_detail_taco_bell_full(uber_store_tacobell):
 def test_parse_store_detail_handles_empty_payload():
     assert parse_store_detail({}, "x", Platform.UBER_EATS, "https://x") is None
     assert parse_store_detail({"data": {}}, "x", Platform.UBER_EATS, "https://x") is None
+
+
+def test_service_fee_cents_mirroring_delivery_fee_is_not_a_service_fee():
+    """Live 2026 payloads put the DELIVERY fee in fareInfo.serviceFeeCents
+    (observed: serviceFeeCents=1490 alongside fareBadge '$14.90 Delivery
+    Fee'). It must not be double-counted as a service fee."""
+    from app.services.uber_shared import _detail_fees
+
+    store = {
+        "fareInfo": {"serviceFee": 14.9, "serviceFeeCents": 1490},
+        "fareBadge": {"text": "$14.90 Delivery Fee"},
+    }
+    delivery, service, minimum, exposed = _detail_fees(store)
+    assert delivery == 14.9
+    assert service == 0.0
+    assert exposed is False
+
+
+def test_service_fee_cents_never_counts_as_service_fee():
+    """Even when it differs from the delivery fee (promo stores show $0
+    delivery text while serviceFeeCents keeps the base fee), the field is
+    never trusted as a service fee — the estimated % schedule covers it."""
+    from app.services.uber_shared import _detail_fees
+
+    store = {
+        "fareInfo": {"serviceFeeCents": 249},
+        "fareBadge": {"text": "$5.99 Delivery Fee"},
+    }
+    delivery, service, minimum, exposed = _detail_fees(store)
+    assert delivery == 5.99
+    assert service == 0.0
+    assert exposed is False
+
+    promo_store = {
+        "fareInfo": {"serviceFeeCents": 1490},
+        "modalityInfo": {"modalityOptions": [{
+            "diningMode": "DELIVERY",
+            "priceTitleRichText": {"richTextElements": [
+                {"type": "text", "text": {"text": {"text": " $0 delivery fee"}}},
+            ]},
+        }]},
+    }
+    delivery, service, minimum, exposed = _detail_fees(promo_store)
+    assert delivery == 0.0
+    assert service == 0.0
+    assert exposed is False
+
+
+def test_service_fee_cents_is_delivery_fallback_when_nothing_else_found():
+    from app.services.uber_shared import _detail_fees
+
+    store = {"fareInfo": {"serviceFeeCents": 1490}}
+    delivery, service, minimum, exposed = _detail_fees(store)
+    assert delivery == 14.9
+    assert service == 0.0
+    assert exposed is False

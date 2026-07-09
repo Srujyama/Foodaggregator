@@ -13,8 +13,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.models.food import MenuItem, Platform, PlatformResult
+from app.services.pricing import build_fee_schedule
 
 logger = logging.getLogger(__name__)
+
+# Safety bound for pathological catalogs (grocery-scale stores); restaurant
+# menus run 100-400 items and fit comfortably.
+MAX_MENU_ITEMS = 2000
 
 
 def parse_fee_string(text) -> float:
@@ -252,6 +257,12 @@ def parse_feed_store(
 
         pickup_eta = max(5, int(eta_min * 0.5)) if eta_min else 15
 
+        fee_schedule = build_fee_schedule(
+            platform.value,
+            delivery_fee=delivery_fee,
+            service_fee_flat=service_fee if service_fee > 0 else None,
+        )
+
         return PlatformResult(
             platform=platform,
             restaurant_name=name,
@@ -259,6 +270,7 @@ def parse_feed_store(
             restaurant_url=url,
             delivery_fee=delivery_fee,
             service_fee=service_fee,
+            fee_schedule=fee_schedule,
             estimated_delivery_minutes=eta_min,
             estimated_delivery_minutes_max=eta_max if eta_max != eta_min else None,
             pickup_available=True,
@@ -369,42 +381,92 @@ def _detail_eta(store: dict) -> tuple[int, Optional[int]]:
         return 30, None
 
 
-def _detail_fees(store: dict) -> tuple[float, float, Optional[float]]:
-    """Extract (delivery_fee, service_fee, minimum_order) from getStoreV1.
+def _rich_text_parts(rich: dict) -> list[str]:
+    """Flatten a RichText object's text elements into plain strings."""
+    parts = []
+    for el in (rich or {}).get("richTextElements") or []:
+        if not isinstance(el, dict):
+            continue
+        text_wrap = el.get("text")
+        if isinstance(text_wrap, dict):
+            inner = text_wrap.get("text")
+            if isinstance(inner, dict):
+                val = inner.get("text")
+            else:
+                val = inner
+            if isinstance(val, str) and val.strip():
+                parts.append(val.strip())
+    return parts
+
+
+def _modality_delivery_fee(store: dict) -> Optional[float]:
+    """Pull the delivery fee from the DELIVERY modality option's price text.
+
+    This is where the current getStoreV1 response actually carries the fee
+    (e.g. ' $0 delivery fee', '$2.49 Delivery Fee'). Returns None when no
+    delivery-fee text is present.
+    """
+    modality = store.get("modalityInfo") or {}
+    for opt in modality.get("modalityOptions") or []:
+        if not isinstance(opt, dict):
+            continue
+        if str(opt.get("diningMode") or "").upper() != "DELIVERY":
+            continue
+        for text in _rich_text_parts(opt.get("priceTitleRichText") or {}):
+            lower = text.lower()
+            if "fee" in lower or "deliver" in lower:
+                return parse_fee_string(text)
+    return None
+
+
+def _detail_fees(store: dict) -> tuple[float, float, Optional[float], bool]:
+    """Extract (delivery_fee, service_fee, minimum_order, service_exposed)
+    from getStoreV1.
 
     UberEats deprecated fareInfo.deliveryFee on the public response - the
-    structured fee now mostly lives in fareBadge.text or modalityInfo. We try
-    all of them.
+    real fee now lives in the DELIVERY modality option's priceTitleRichText;
+    fareBadge/fareInfo/legacy modality keys are kept as fallbacks.
+
+    fareInfo.serviceFeeCents is a TRAP: on live 2026 payloads it holds the
+    DELIVERY fee in cents (verified: fareInfo={"serviceFee":14.9,
+    "serviceFeeCents":1490} alongside fareBadge "$14.90 Delivery Fee" and a
+    $0-service feed badge for the same store). It is therefore NEVER trusted
+    as a service fee — on a promo store ("$0 delivery fee" text while
+    serviceFeeCents keeps the base fee) a difference-based heuristic would
+    fabricate a phantom flat service fee. It only serves as a delivery-fee
+    fallback when no other source produced one.
     """
     delivery = 0.0
-    service = 0.0
     minimum = None
 
+    modality_fee = _modality_delivery_fee(store)
+    if modality_fee is not None:
+        delivery = modality_fee
+
     fare_info = store.get("fareInfo") or {}
-    sf_cents = fare_info.get("serviceFeeCents")
-    if sf_cents is not None:
-        service = cents_to_dollars(sf_cents)
 
     df_raw = fare_info.get("deliveryFee")
-    if isinstance(df_raw, str):
-        delivery = parse_fee_string(df_raw)
-    elif df_raw is not None:
-        delivery = cents_to_dollars(df_raw)
+    if df_raw is not None and modality_fee is None:
+        if isinstance(df_raw, str):
+            delivery = parse_fee_string(df_raw)
+        else:
+            delivery = cents_to_dollars(df_raw)
 
     fare_badge = store.get("fareBadge")
     if isinstance(fare_badge, dict):
         text = fare_badge.get("text") or fare_badge.get("accessibilityText") or ""
-        if text and delivery == 0.0:
+        if text and modality_fee is None and delivery == 0.0:
             v = parse_fee_string(text)
             # only take the badge if it's actually about delivery, not "Free item"
             if "deliv" in text.lower() or "$" in text:
                 delivery = v
 
     modality = store.get("modalityInfo") or {}
+    service = 0.0
     if isinstance(modality, dict):
         for k in ("deliveryFee", "deliveryFeeText"):
             val = modality.get(k)
-            if val and delivery == 0.0:
+            if val and modality_fee is None and delivery == 0.0:
                 if isinstance(val, str):
                     delivery = parse_fee_string(val)
                 else:
@@ -416,6 +478,16 @@ def _detail_fees(store: dict) -> tuple[float, float, Optional[float]]:
                     service = parse_fee_string(val)
                 else:
                     service = cents_to_dollars(val)
+    service_exposed = service > 0
+
+    # serviceFeeCents last: delivery-fee fallback only (see docstring — the
+    # field carries the delivery fee on live 2026 payloads, so treating any
+    # value here as a service fee would double-count).
+    sf_cents = fare_info.get("serviceFeeCents")
+    if sf_cents is not None and delivery == 0.0 and modality_fee is None:
+        candidate = cents_to_dollars(sf_cents)
+        if candidate > 0:
+            delivery = candidate
 
     # Minimum order
     for k in ("smallOrderThreshold", "minOrderTotalCents", "minimumOrder"):
@@ -430,7 +502,7 @@ def _detail_fees(store: dict) -> tuple[float, float, Optional[float]]:
             except Exception:
                 pass
 
-    return delivery, service, minimum
+    return delivery, service, minimum, service_exposed
 
 
 def _strip_html(s: str) -> str:
@@ -451,48 +523,80 @@ def parse_store_detail(
     title_val = store.get("title", "")
     name = _name_from_title(title_val) or store.get("sanitizedTitle") or f"Store {restaurant_id}"
 
-    delivery_fee, service_fee, minimum_order = _detail_fees(store)
+    delivery_fee, service_fee, minimum_order, service_fee_exposed = _detail_fees(store)
 
     eta_min, eta_max = _detail_eta(store)
 
-    # Menu
+    # Menu: catalogSectionsMap holds the COMPLETE menu, keyed by the uuids in
+    # store.sections (one per menu, e.g. "Lunch/Dinner" and "Breakfast").
+    # Dedupe on item uuid so the same dish in "Most Ordered" and its home
+    # category appears once, while same-named items in different sections
+    # (size variants, breakfast-vs-lunch) all survive.
+    menu_names: dict[str, str] = {}
+    for menu in store.get("sections") or []:
+        if isinstance(menu, dict) and menu.get("uuid"):
+            menu_names[menu["uuid"]] = _name_from_title(menu.get("title"))
+    multi_menu = len({v for v in menu_names.values() if v}) > 1
+
     menu_items: list[MenuItem] = []
-    seen = set()
-    for _sid, sections_list in (store.get("catalogSectionsMap") or {}).items():
+    seen_uuids: set[str] = set()
+    seen_keys: set[tuple] = set()
+    for menu_uuid, sections_list in (store.get("catalogSectionsMap") or {}).items():
+        menu_title = menu_names.get(menu_uuid) or ""
         if not isinstance(sections_list, list):
             sections_list = [sections_list]
         for section in sections_list:
             if not isinstance(section, dict):
                 continue
-            items = (
+            items_payload = (
                 section.get("payload", {})
                 .get("standardItemsPayload", {})
-                .get("catalogItems", [])
             )
-            for item in items:
+            section_title = _name_from_title(items_payload.get("title")) or None
+            if multi_menu and menu_title and section_title and menu_title != section_title:
+                section_label = f"{menu_title} · {section_title}"
+            else:
+                section_label = section_title or menu_title or None
+            for item in items_payload.get("catalogItems", []):
                 try:
                     iname = item.get("title", "")
                     if not iname:
                         continue
-                    key = iname.lower()
-                    if key in seen:
-                        continue
-                    price = cents_to_dollars(item.get("price") or 0)
-                    if price <= 0:
-                        continue
-                    seen.add(key)
+                    uid = item.get("uuid")
+                    if uid:
+                        if uid in seen_uuids:
+                            continue
+                        seen_uuids.add(uid)
+                    else:
+                        key = (section_label, iname.lower())
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                    sold_out = item.get("isSoldOut")
+                    is_avail = item.get("isAvailable")
+                    if sold_out is True:
+                        available = False
+                    elif is_avail is not None:
+                        available = bool(is_avail)
+                    else:
+                        available = None
                     menu_items.append(MenuItem(
                         name=iname,
                         description=item.get("itemDescription"),
-                        price=price,
+                        price=cents_to_dollars(item.get("price") or 0),
                         image_url=item.get("imageUrl"),
+                        section=section_label,
+                        item_id=uid,
+                        is_available=available,
                     ))
                 except Exception:
                     continue
-                if len(menu_items) >= 100:
+                if len(menu_items) >= MAX_MENU_ITEMS:
                     break
-            if len(menu_items) >= 100:
+            if len(menu_items) >= MAX_MENU_ITEMS:
                 break
+        if len(menu_items) >= MAX_MENU_ITEMS:
+            break
 
     location = store.get("location") or {}
     address = None
@@ -595,6 +699,16 @@ def parse_store_detail(
 
     slug = store.get("slug") or restaurant_id
 
+    # Uber almost never exposes a real service fee pre-checkout (_detail_fees
+    # explains the serviceFeeCents trap); the published ~15% estimate fills
+    # the gap unless one genuinely surfaced.
+    fee_schedule = build_fee_schedule(
+        platform.value,
+        delivery_fee=delivery_fee,
+        service_fee_flat=service_fee if service_fee_exposed else None,
+        minimum_order=minimum_order,
+    )
+
     return PlatformResult(
         platform=platform,
         restaurant_name=name,
@@ -603,6 +717,7 @@ def parse_store_detail(
         menu_items=menu_items,
         delivery_fee=delivery_fee,
         service_fee=service_fee,
+        fee_schedule=fee_schedule,
         estimated_delivery_minutes=eta_min,
         estimated_delivery_minutes_max=eta_max,
         pickup_available=pickup_available,
